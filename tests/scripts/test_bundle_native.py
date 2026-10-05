@@ -242,7 +242,7 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
         (frontend / "index.html").write_text("store web", encoding="utf-8")
         assert native.finish_native(prepared, {"web": frontend}) == 0
     assert (output / "hermes-agent/hermes_cli/web_dist/index.html").read_text() == "store web"
-    assert calls[0]["all_extras"] is True
+    assert "payloadtest" in calls[0]["extras"]  # the bundle rules' "*" reaches the fixture's extra
     assert calls[0]["cache"] == tmp_path / "cache"
     assert (output / "hermes-agent/pyproject.toml").is_file()
     assert 'version="1.0.0"' in (output / "hermes-agent/pyproject.toml").read_text()
@@ -630,3 +630,4 @@ def test_native_dispatch_child_environment(tmp_path, monkeypatch, cache_source, 
     assert (cache / "reused").read_text(encoding="utf-8-sig") == "xx"
     assert all(not home.exists() for home in homes)
     assert dict(os.environ) == before
+

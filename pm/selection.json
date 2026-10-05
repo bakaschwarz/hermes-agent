@@ -1,0 +1,32 @@
+{
+  "$schema": "./selection.schema.json",
+  "schema": 1,
+  "rules": [
+    {
+      "install": ["source"],
+      "targets": ["*"],
+      "tools": ["agent-browser", "cua-driver"],
+      "extras": ["all"],
+      "why": "Browser and computer use have no other OS path, so the default install carries them."
+    },
+    {
+      "install": ["bundle"],
+      "targets": ["*"],
+      "tools": ["*", "-whispercpp-cpu"],
+      "extras": ["*"],
+      "why": "Desktop payloads work offline, so they carry every optional tool and extra."
+    },
+    {
+      "install": ["bundle"],
+      "targets": ["win32-arm64"],
+      "tools": ["whispercpp-cpu"],
+      "why": "faster-whisper has no Windows ARM64 wheel; whisper.cpp is local STT there."
+    },
+    {
+      "install": ["docker"],
+      "targets": ["*"],
+      "extras": ["all", "messaging", "otlp", "anthropic", "bedrock", "azure-identity", "matrix", "google-chat"],
+      "why": "Containers often cannot reach PyPI for lazy installs, so the image bakes the adapters and provider SDKs users enable most. matrix's python-olm needs the image's native build toolchain, which is why it is not in [all]."
+    }
+  ]
+}

@@ -1,8 +1,8 @@
 """Optional packages the default install carries, and the user's opt-outs.
 
-A ``default`` package (see ``Package.default``) joins the installers' PM stage,
-a bare ``hermes pm install`` and ``hermes update`` on every target it builds
-for. The user can decline one (``install.sh --skip-browser`` /
+A package the ``source`` rules of pm/selection.json select joins the
+installers' PM stage, a bare ``hermes pm install`` and ``hermes update`` on
+every target it builds for. The user can decline one (``install.sh --skip-browser`` /
 ``--skip-computer-use``, ``install.ps1 -SkipBrowser`` / ``-SkipComputerUse``,
 ``hermes pm install --without NAME``). The choice
 is recorded per installation beside PM's other install state, so a later
@@ -59,31 +59,24 @@ def record_declined(*, add: Iterable[str] = (), remove: Iterable[str] = (),
 
 
 def default_package_names() -> list[str]:
-    """Every package that may be declined: the ``default`` ones, any target."""
-    from pm.registry import all_packages, get_package
+    """Every package that may be declined: the source defaults, any target."""
+    from pm.selection import select
+    from pm.store import ALL_TARGETS
 
-    return [name for name in all_packages() if get_package(name).default and not get_package(name).internal]
+    return sorted({name for target in ALL_TARGETS for name in select("source", target).tools})
 
 
 def default_packages(names: list[str], *, target: str | None = None,
                      declined_names: frozenset[str] | None = None) -> list[str]:
     """The optional defaults among ``names`` this install should carry.
 
-    Excludes targets the package has no build for (its ``gaps``) and packages
-    the user declined. ``names`` is the lockfile's package list.
+    Excludes targets the package has no build for and packages the user
+    declined. ``names`` is the lockfile's package list.
     """
-    from pm.registry import get_package
+    from pm.selection import select
     from pm.store import current_target
 
     target = current_target() if target is None else target
     refused = declined() if declined_names is None else declined_names
-    selected = []
-    for name in names:
-        try:
-            package = get_package(name)
-        except KeyError:
-            continue  # Lockfile/definition skew mid-update; drift() skips these too.
-        if package.default and not package.internal and name not in refused \
-                and package.missing_reason(target) is None:
-            selected.append(name)
-    return selected
+    # Lockfile/definition skew mid-update: a selected name the lock lacks is skipped.
+    return [name for name in select("source", target).tools if name in names and name not in refused]

@@ -61,9 +61,9 @@ def _relock_project(root: Path) -> int:
     print(f"Next: re-source activation to sync the environments: {activate}")
     opt_in = _new_opt_in_extras(root, before)
     if opt_in:
-        # Activation syncs [all] plus extras already recorded, and --test-extras
-        # REPLACES the default rather than adding to it, so [all] stays listed.
-        names = ",".join(["all", *opt_in])
+        # Activation syncs the source extras plus extras already recorded, and
+        # --test-extras REPLACES the default rather than adding to it, so they stay listed.
+        names = ",".join([*_source_extras(root), *opt_in])
         flag = f"-TestExtras '{names}'" if windows else f"--test-extras {names}"
         print(f"New extras outside [all] ({', '.join(opt_in)}) need: {activate} {flag}")
     print("Then commit pyproject.toml and uv.lock together.")
@@ -87,8 +87,15 @@ def _locked_extras(root: Path) -> set[str]:
     return set()
 
 
+def _source_extras(root: Path) -> list[str]:
+    from pm.selection import select
+    from pm.store import current_target
+
+    return list(select("source", current_target(), repo_dir=root).extras)
+
+
 def _new_opt_in_extras(root: Path, before: set[str]) -> list[str]:
-    """Extras this relock introduced that the default [all] closure does not reach."""
+    """Extras this relock introduced that the source install's closure does not reach."""
     import re
     import tomllib
 
@@ -96,7 +103,7 @@ def _new_opt_in_extras(root: Path, before: set[str]) -> list[str]:
         project = tomllib.load(f)["project"]
     extras = project.get("optional-dependencies", {})
     self_ref = re.compile(rf"\s*{re.escape(project['name'])}\s*\[([^\]]+)\]")
-    covered, pending = set(), ["all"]
+    covered, pending = set(), _source_extras(root)
     while pending:
         extra = pending.pop()
         if extra in covered:
@@ -314,12 +321,14 @@ def _install_python_environments(extras: list[str], *, sync: bool, test_environm
         from pm.install import sync_venv
 
         try:
-            # Default the venv to the [all] feature set — the same thing
-            # `hermes update` force-syncs on every run (update_cmd.py) and
-            # the installers' old `--extra all` did. sync_venv unions, so
-            # any lazy extras already recorded survive this; it only makes
-            # a fresh bootstrap match what the first update would do.
-            sync_venv(extras or ["all"], explicit=True)
+            # Default the venv to the source install's extras (pm/selection.json),
+            # the same set `hermes update` force-syncs on every run. sync_venv
+            # unions, so any lazy extras already recorded survive this; it only
+            # makes a fresh bootstrap match what the first update would do.
+            from pm.selection import select
+            from pm.store import current_target
+
+            sync_venv(extras or list(select("source", current_target()).extras), explicit=True)
             print(f"✓ venv{' +' + ' +'.join(extras) if extras else ''}")
         except InstallError as e:
             print(f"✗ {e}")

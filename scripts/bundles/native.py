@@ -15,15 +15,20 @@ from pm.lock import Facts
 from pm.registry import get_package, walk
 from pm.store import current_target
 
-def _bundle_package_names() -> list[str]:
+def _bundle_package_names(target: str | None = None) -> list[str]:
+    """Roots, the bundle's selected optional tools (pm/selection.json), and uv + python cargo."""
+    from pm.selection import select
+
+    target = current_target() if target is None else target
+    selected = set(select("bundle", target).tools)
     names = [
         n
         for n in _lockfile().names()
-        if not get_package(n).internal or n == "uv"
+        if n == "uv" or (not get_package(n).internal and (not get_package(n).optional or n in selected))
     ]
     if "python" not in names:
         names.append("python")
-    return names
+    return [n for n in names if get_package(n).missing_reason(target) is None]
 
 
 def _arch_guard(store_dir: Path) -> list[str]:
@@ -175,14 +180,15 @@ def _prepare_native(*, out: Path, ref: str, source: Path, cache: Path,
     snapshot(source, revision, repo_dir, exclude=INERT_SNAPSHOT_DIRS)
     # PM's provider code reads its adjacent lock. Never combine that tool graph
     # with a revision selecting different pins.
-    if (repo_dir / "pm/lock.json").read_bytes() != paths.lockfile_path().read_bytes():
-        raise ValueError("selected revision's PM lock differs from the builder; use a checkout at that revision")
+    from pm.selection import selection_path
+
+    if (repo_dir / "pm/lock.json").read_bytes() != paths.lockfile_path().read_bytes() or \
+            (repo_dir / "pm/selection.json").read_bytes() != selection_path().read_bytes():
+        raise ValueError("selected revision's PM lock or selection differs from the builder; "
+                         "use a checkout at that revision")
     build_env = os.environ if env is None else env
 
-    names = [
-        n for n in _bundle_package_names()
-        if get_package(n).missing_reason(current_target()) is None
-    ]
+    names = _bundle_package_names()
     from pm import prepare_tools, stage_tools
 
     prepare_tools(names, out=Path(tools) if tools is not None else store_dir,
@@ -224,10 +230,13 @@ def _prepare_native(*, out: Path, ref: str, source: Path, cache: Path,
     from pm import build_environment
 
     # Cold native wheels need a larger budget than interactive installs.
+    from pm.selection import select
+
+    extras = list(select("bundle", current_target(), repo_dir=repo_dir).extras)
     build_environment(source=repo_dir, python=python_bin, out=venv_dir,
-                      env=env, cache=cache, all_extras=True, sealed=True, explicit=True,
+                      env=env, cache=cache, extras=extras, sealed=True, explicit=True,
                       timeout=2 * 60 * 60)
-    print("✓ venv (all extras, on the staged interpreter)")
+    print(f"✓ venv ({len(extras)} selected extras, on the staged interpreter)")
 
     # Inventory the staged interpreter before publishing the bundle contract.
     from pm.features import installed_extras, write_features

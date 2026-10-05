@@ -867,8 +867,6 @@ class Ripgrep(BinaryPackage):
 class CuaDriver(BinaryPackage):
     name = "cua-driver"
     optional = True
-    # Computer use's only OS path, so the default install carries it.
-    default = True
     gaps = {**{target: "cua-driver does not publish a musl build" for target in MUSL_TARGETS},
             "linux-arm64-bionic": "cua-driver does not publish an Android build"}
     binary_rel = {
@@ -922,9 +920,8 @@ class AgentBrowser(BinaryPackage):
     optional = True
     # Browser tools find agent-browser only in PM's store or on PATH (no npx
     # fallback), and their readiness check never installs it, so an install
-    # without it silently loses every browser_* tool.
-    # Default-install it; `install.sh --skip-browser` declines it.
-    default = True
+    # without it silently loses every browser_* tool. pm/selection.json
+    # default-installs it; `install.sh --skip-browser` declines it.
     deps = ("chromium",)
     # Termux owns its browser stack (`npm install -g agent-browser`; see
     # tools/browser_tool_install.py), and PM has no bionic Chromium to drive.
@@ -1056,58 +1053,51 @@ class Chromium(Package):
         }
 
 
-class LlamaCpp(BinaryPackage):
-    """One llama.cpp backend build. Backends are dlopen'd plugins, so a
-    usable engine is one archive per (target, backend) — plus, for CUDA, the
-    cudart archive (end users have no CUDA toolkit), and on Linux the libgomp
-    .deb. Every library lands beside llama-server: Windows resolves DLLs from
-    the executable's directory, and the Linux builds' RUNPATH is $ORIGIN.
-
-    Backend is a HARDWARE choice, not a target, so each backend is its own
-    optional package and the runtime asks for the one this machine can
-    use. Version is llama.cpp's rolling release tag without the `b`.
+class _GgmlRelease(BinaryPackage):
+    """One ggml-org release build (llama.cpp, whisper.cpp). Backends are
+    dlopen'd plugins, so a usable engine is one archive per target — plus, on
+    Linux, the libgomp .deb. Every library lands beside the program: Windows
+    resolves DLLs from the executable's directory, and the Linux builds'
+    RUNPATH is $ORIGIN. Version is the rolling release tag without the `b`.
     """
 
     optional = True
     on_path = False
-    binary_rel = {"win32": "llama-server.exe", "posix": "llama-server"}
     flatten = False
-    # --version is llama-server's liveness proof AND the check that the
-    # backend's shared libraries resolve: a CUDA build with no cudart
-    # beside it fails here rather than at first chat.
+    # The probe is the program's liveness proof AND the check that its shared
+    # libraries resolve: a CUDA build with no cudart beside it fails here
+    # rather than at first use.
     probe_cwd = True
 
-    backend: str = ""
+    repo: str = ""
     # Release-asset infix per target, or absent where upstream ships none.
     assets: dict[str, str] = {}
     # Upstream's Linux builds (CPU included) link the system OpenMP runtime,
     # which minimal hosts (WSL, containers) lack, and a normal install never
     # touches the system package manager. The $ORIGIN RUNPATH loads this copy
     # ahead of the host's, so its glibc floor must stay at or below every
-    # engine's. Ubuntu 22.04's needs glibc 2.34, the floor of the x64 CPU and
-    # Vulkan builds, and provides every GOMP version the builds reference. The
-    # release-pocket file stays in the pool until 22.04's EOL; the artifact
-    # mirror serves the pinned bytes after that.
+    # build's. Ubuntu 22.04's needs glibc 2.34, the floor of llama.cpp's x64
+    # CPU and Vulkan builds and of whisper.cpp's, and provides every GOMP
+    # version the builds reference. The release-pocket file stays in the pool
+    # until 22.04's EOL; the artifact mirror serves the pinned bytes after that.
     _LIBGOMP = {
         "linux-x64": "https://archive.ubuntu.com/ubuntu/pool/main/g/gcc-12/libgomp1_12-20220319-1ubuntu1_amd64.deb",
         "linux-arm64": "https://ports.ubuntu.com/ubuntu-ports/pool/main/g/gcc-12/libgomp1_12-20220319-1ubuntu1_arm64.deb",
     }
 
+    def _gap(self, target: str) -> str:
+        return f"{self.repo} publishes no {self.name} build for {target}"
+
     @property
     def gaps(self) -> dict[str, str]:  # type: ignore[override]
-        return {
-            target: f"llama.cpp publishes no {self.backend} build for {target}"
-            for target in ALL_TARGETS
-            if target not in self.assets
-        }
+        return {target: self._gap(target) for target in ALL_TARGETS if target not in self.assets}
 
     def _asset_names(self, version: str, target: str) -> list[str]:
-        ext = "zip" if target.startswith("win32") else "tar.gz"
-        return [f"llama-b{version}-bin-{self.assets[target]}.{ext}"]
+        raise NotImplementedError
 
     def fetch_urls(self, version: str, target: str) -> list[str]:
         return [
-            f"https://github.com/ggml-org/llama.cpp/releases/download/b{version}/{asset}"
+            f"https://github.com/{self.repo}/releases/download/b{version}/{asset}"
             for asset in self._asset_names(version, target)
         ] + ([self._LIBGOMP[target]] if target in self._LIBGOMP else [])
 
@@ -1115,22 +1105,12 @@ class LlamaCpp(BinaryPackage):
         return self.fetch_urls(version, target)[0]
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
-        # Resolve from the llama.app installer bucket (the installer's own
-        # updater pointer + version index — no API token, no rate limit):
-        # the `latest` pointer is the authoritative "next version"; the
-        # bucket tree supplies the full candidate list. Artifacts still
-        # come from the llama.cpp GitHub releases (1:1 tag correspondence).
-        latest = llama_app_latest()
-        if latest is not None:
-            return [latest, *llama_app_bucket_versions()]
-        return llama_app_bucket_versions() or github_release_tags(
-            "ggml-org/llama.cpp", strip_prefix="b"
-        )
+        return github_release_tags(self.repo, strip_prefix="b")
 
     def known_sha256(self, version: str, url: str) -> Optional[str]:
         """GitHub's release API serves every asset's digest, so pinning a
         280 MB engine costs one API call instead of the download."""
-        return _github_release_digests("ggml-org/llama.cpp", f"b{version}").get(
+        return _github_release_digests(self.repo, f"b{version}").get(
             url.rsplit("/", 1)[-1]
         )
 
@@ -1141,22 +1121,53 @@ class LlamaCpp(BinaryPackage):
             super().unpack(archive, staged, target)
 
     def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
-        """Some archives nest the binaries under build/bin; hoist them so
-        binary_rel is one path for every target. The libgomp .deb unpacks
-        in its filesystem layout (usr/lib/<triplet>/); only the library
-        itself moves beside llama-server."""
-        server = self.binary(staged, target).name
-        if not (staged / server).is_file():
-            found = sorted(staged.rglob(server))
+        """Archives nest the binaries under a top-level or build/bin dir;
+        hoist them so binary_rel is one path for every target. The libgomp
+        .deb unpacks in its filesystem layout (usr/lib/<triplet>/); only the
+        library itself moves beside the program."""
+        program = self.binary(staged, target).name
+        if not (staged / program).is_file():
+            found = sorted(staged.rglob(program))
             if not found:
-                raise InstallError(self.name, "archive contains no llama-server")
+                raise InstallError(self.name, f"archive contains no {program}")
             merge_tree(found[0].parent, staged)
-        # The pin decides whether the .deb arrives (test_llamacpp_pins); verify()'s --version
-        # probe is what proves the libraries resolve.
+        # The pin decides whether the .deb arrives (test_ggml_release_pins); verify()'s probe
+        # is what proves the libraries resolve.
         libs = sorted((staged / "usr" / "lib").glob("*/libgomp.so.1"))
         if libs:
             shutil.copyfile(libs[0], staged / "libgomp.so.1")
             shutil.rmtree(staged / "usr")
+
+
+class LlamaCpp(_GgmlRelease):
+    """One llama.cpp backend build. Backend is a HARDWARE choice, not a
+    target, so each backend is its own optional package and the runtime asks
+    for the one this machine can use (and CUDA also pins the cudart archive,
+    since end users have no CUDA toolkit).
+    """
+
+    repo = "ggml-org/llama.cpp"
+    binary_rel = {"win32": "llama-server.exe", "posix": "llama-server"}
+
+    backend: str = ""
+
+    def _gap(self, target: str) -> str:
+        return f"llama.cpp publishes no {self.backend} build for {target}"
+
+    def _asset_names(self, version: str, target: str) -> list[str]:
+        ext = "zip" if target.startswith("win32") else "tar.gz"
+        return [f"llama-b{version}-bin-{self.assets[target]}.{ext}"]
+
+    def latest_versions(self, target: str, locked=None) -> list[str]:
+        # Resolve from the llama.app installer bucket (the installer's own
+        # updater pointer + version index — no API token, no rate limit):
+        # the `latest` pointer is the authoritative "next version"; the
+        # bucket tree supplies the full candidate list. Artifacts still
+        # come from the llama.cpp GitHub releases (1:1 tag correspondence).
+        latest = llama_app_latest()
+        if latest is not None:
+            return [latest, *llama_app_bucket_versions()]
+        return llama_app_bucket_versions() or super().latest_versions(target, locked)
 
 
 def _github_release_digests(repo: str, tag: str) -> dict[str, str]:
@@ -1269,13 +1280,22 @@ class LlamaCppCpu(LlamaCpp):
 
 
 @register
-class WhisperCppCpu(BinaryPackage):
-    """Native local STT for Windows ARM64, where faster-whisper has no wheel."""
+class WhisperCppCpu(_GgmlRelease):
+    """whisper.cpp's CPU CLI, the managed local_command STT engine. faster-whisper
+    stays the default local provider; this is the opt-in for hosts it has no
+    wheel for (Windows ARM64). Upstream ships no macOS CLI archive."""
 
     name = "whispercpp-cpu"
-    optional = True
-    gaps = {target: "uses the existing faster-whisper provider" for target in ALL_TARGETS
-            if target != "win32-arm64"}
-    binary_rel = {"win32-arm64": "whisper-cli.exe"}
+    repo = "ggml-org/whisper.cpp"
+    binary_rel = {"win32": "whisper-cli.exe", "posix": "whisper-cli"}
     probe_args = ["--help"]
-    url = "https://github.com/ggml-org/whisper.cpp/releases/download/{version}/whisper-bin-win-cpu-arm64.zip"
+    assets = {
+        "win32-x64": "x64",
+        "win32-arm64": "win-cpu-arm64",
+        "linux-x64": "ubuntu-x64",
+        "linux-arm64": "ubuntu-arm64",
+    }
+
+    def _asset_names(self, version: str, target: str) -> list[str]:
+        ext = "zip" if target.startswith("win32") else "tar.gz"
+        return [f"whisper-bin-{self.assets[target]}.{ext}"]

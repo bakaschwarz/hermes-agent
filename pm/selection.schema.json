@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:hermes-agent:schema:pm-selection:v1",
+  "title": "Hermes PM default selection",
+  "description": "Which optional PM packages (tools) and Python extras each kind of install selects by default. Root (non-optional) packages always install and are not listed. Rules apply in order; every rule matching the install kind and target contributes.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "rules"],
+  "properties": {
+    "$schema": {"type": "string"},
+    "schema": {"const": 1},
+    "rules": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/rule"}
+    }
+  },
+  "$defs": {
+    "rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["install", "targets", "why"],
+      "anyOf": [{"required": ["tools"]}, {"required": ["extras"]}],
+      "properties": {
+        "install": {
+          "description": "source = install.sh / install.ps1 / bare `hermes pm install` / `hermes update`; bundle = desktop payloads (MSIX, DMG, AppImage); docker = the published container image.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"enum": ["source", "bundle", "docker"]}
+        },
+        "targets": {
+          "description": "PM target globs, e.g. win32-arm64, linux-*, *-arm64, *.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[a-z0-9*?-]+$"}
+        },
+        "tools": {
+          "description": "Optional PM package names. \"name\" selects, \"-name\" deselects, \"*\" selects every optional package. A tool with no build for the target is skipped. Users decline source tools with `hermes pm install --without`.",
+          "$ref": "#/$defs/entries"
+        },
+        "extras": {
+          "description": "pyproject extras. \"name\" selects, \"-name\" deselects, \"*\" selects every declared extra except [tool.hermes] opt-in-extras.",
+          "$ref": "#/$defs/entries"
+        },
+        "why": {
+          "description": "The reason this rule exists.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "entries": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "pattern": "^(\\*|-?[a-z0-9][a-z0-9_-]*)$"}
+    }
+  }
+}

@@ -54,17 +54,41 @@ Use `hermes pm repair` for damaged dependency files. See the developer
 
 ## Source installs and packaged builds
 
-Source installers provision the required tools plus Python. They select the
-`all` Python extra. Named optional tools install when requested.
+Source installers provision the required tools plus Python. Named optional
+tools install when requested.
+
+### Default selection
+
+`pm/selection.json` (shape: `pm/selection.schema.json`) says which optional
+tools and Python extras each kind of install selects by default. Required
+tools always install. Each rule names its install kinds, its PM target globs,
+and the reason it exists:
+
+| `install` | Covers |
+|---|---|
+| `source` | `install.sh`, `install.ps1`, a bare `hermes pm install`, `hermes update` |
+| `bundle` | Desktop payloads (MSIX, DMG, AppImage) |
+| `docker` | The published container image (`pm.build_env --selection docker`) |
+
+Every rule that matches the install kind and target applies, in file order.
+In `tools` and `extras`, `"name"` selects, `"-name"` deselects and `"*"`
+selects everything. For tools, `"*"` means every optional package. For extras,
+it means every declared extra except `[tool.hermes] opt-in-extras`. A tool with
+no build for the target is skipped. For example, this rule ships whisper.cpp
+only in the Windows ARM64 desktop bundle:
+
+```json
+{"install": ["bundle"], "targets": ["win32-arm64"], "tools": ["whispercpp-cpu"],
+ "why": "faster-whisper has no Windows ARM64 wheel; whisper.cpp is local STT there."}
+```
 
 For a canonical source installation, Desktop checks and runs the published
 installation launcher. PM owns its interpreter and dependency selection. Desktop
 does not replace that command with a guessed `venv` path. Developer overrides
 retain their selected interpreter.
 
-Native desktop bundles stage the supported tool set and all target-compatible
-Python extras before packaging. `--extra all` and `--all-extras` are not
-synonyms. Platform markers still exclude dependencies that cannot run on a target.
+Native desktop bundles stage the required tools and their `bundle` selection
+before packaging. Platform markers still exclude dependencies that cannot run on a target.
 
 The complete desktop builder composes PM with the Node/native packaging providers.
 From a clean checkout at a release tag, `python scripts/bundles/desktop.py --tag vX.Y.Z`
@@ -530,7 +554,7 @@ hermes pm install chromium
 
 | Command | Effect |
 |---|---|
-| `pm install [names...]` | Install named packages. With no names, provision required tools plus Python, put those tools on PATH, and then sync the `all` extra. A bare install also installs the default optional tools (`agent-browser` and Chromium, `cua-driver`); a failed download of these prints a warning and does not fail the install. Naming a package you declined earlier undoes that choice. |
+| `pm install [names...]` | Install named packages. With no names, provision required tools plus Python, put those tools on PATH, and then sync the `source` extras from `pm/selection.json`. A bare install also installs the `source` optional tools (`agent-browser` and Chromium, `cua-driver`); a failed download of these prints a warning and does not fail the install. Naming a package you declined earlier undoes that choice. |
 | `pm install --without NAME` | Do a bare install without the default optional package `NAME` (`agent-browser` or `cua-driver`), and record that choice. Later bare installs and `hermes update` also leave it out. The installers' `--skip-browser` / `-SkipBrowser` and `--skip-computer-use` / `-SkipComputerUse` use this. |
 | `pm install --tools-only` | Install that tool closure and put it on PATH, then stop. The venv sync does not run. |
 | `pm env [names...]` | Print installed packages' PM-contributed environment values as JSON. It does not install missing packages, though a cold Hermes launch may prepare its own Python runtime first. |

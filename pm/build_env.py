@@ -18,6 +18,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--extra", dest="extras", action="append", default=[])
     parser.add_argument("--group", dest="groups", action="append", default=[])
     parser.add_argument("--all-extras", action="store_true")
+    parser.add_argument("--selection", choices=("source", "bundle", "docker"),
+                        help="add the extras pm/selection.json selects for this install kind")
     parser.add_argument("--no-install-project", action="store_true")
     parser.add_argument("--resolve", action="store_true", help="resolve the source lock before building")
     operation = parser.add_mutually_exclusive_group()
@@ -62,6 +64,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.manager_runtime and args.python is None:
         parser.error("--manager-runtime requires the target --python")
     try:
+        extras = list(args.extras)
+        if args.selection:
+            from pm.selection import select
+            from pm.store import current_target
+
+            extras += select(args.selection, current_target(), repo_dir=args.source).extras
         if args.exact_lock:
             from pm.uv_cache_prune import prune_uv_cache_to_lock
 
@@ -76,7 +84,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                                   offline=args.offline, explicit=True)
             return 0
         if args.export_requirements:
-            pm.export_requirements(args.source, args.export_requirements, extras=args.extras,
+            pm.export_requirements(args.source, args.export_requirements, extras=extras,
                                    python=args.python, cache=args.cache, explicit=True)
             return 0
         if args.lock_only:
@@ -95,7 +103,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             executable = pm.build_environment(
                 source=args.source, out=args.out, python=args.python, cache=args.cache,
-                extras=args.extras, groups=args.groups, all_extras=args.all_extras,
+                extras=extras, groups=args.groups, all_extras=args.all_extras,
                 no_install_project=args.no_install_project, frozen=not args.resolve,
                 sealed=args.sealed, offline=args.offline, explicit=True,
             )
