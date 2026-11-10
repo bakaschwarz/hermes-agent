@@ -503,6 +503,7 @@ Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
 | `max_lifetime_seconds` | number | Recycle a stdio server after this total age (`0` = never, default). Restarts transparently on next use. |
 | `enabled` | bool | If `false`, Hermes skips the server entirely |
 | `supports_parallel_tool_calls` | bool | If `true`, tools from this server may run concurrently |
+| `per_session` | bool | If `true`, every gateway session gets its own child for this server, started in that session's workspace, instead of sharing the profile's connection. Use it for stateful servers whose state is the workspace (e.g. Serena's active project) |
 | `events` | bool | If `true`, register the experimental MCP events tools for this server (default `false`). See [MCP Events](#mcp-events-experimental) |
 | `tools` | mapping | Per-server tool filtering and utility policy |
 

@@ -1104,7 +1104,7 @@ def refused_turn_result(policy, exc) -> dict | None:
 
 
 @contextmanager
-def policy_scope(policy, *, authority=None):
+def policy_scope(policy, *, authority=None, session_id=None):
     if policy is None:
         yield
         return
@@ -1131,10 +1131,12 @@ def policy_scope(policy, *, authority=None):
     try:
         from agent.auxiliary_task_config import session_auxiliary_scope
         from gateway.session_local_mcp import editor_mcp_scope
+        from gateway.session_mcp_scope import session_mcp_scope
         # Auxiliary tasks read the session's frozen section, never live config.yaml (a rotated key there).
         auxiliary = policy.config(authority).get('auxiliary') if authority is not None else None
         aux_scope = session_auxiliary_scope(auxiliary) if authority is not None else contextlib.nullcontext()
-        with (editor_scope(policy), editor_mcp_scope(authority, policy), aux_scope,
+        with (session_mcp_scope(policy, authority, session_id), editor_scope(policy),
+              editor_mcp_scope(authority, policy), aux_scope,
               policy.client_env_scope()):
             yield
     finally:

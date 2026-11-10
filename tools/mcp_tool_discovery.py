@@ -614,6 +614,16 @@ def discover_mcp_tools(allowed_mcp_names: Optional[list[str]] = None) -> list[st
         return []
     with _owner_secret_scope():
         servers = _config._load_mcp_config()
+    # A ``per_session`` server belongs to one gateway session's workspace. Connecting it here,
+    # in the profile scope, is exactly the defect: every session of the profile would borrow
+    # that one child and its one active project. Each session connects its own instead.
+    if servers:
+        from tools.registry import current_session_tool_scope
+        if current_session_tool_scope() is None:
+            from agent.secret_scope import serves_routed_profile
+            if serves_routed_profile():
+                servers = {name: cfg for name, cfg in servers.items()
+                           if not (isinstance(cfg, dict) and _registration._per_session_config(cfg))}
     if not servers:
         logger.debug("No MCP servers configured")
         return []

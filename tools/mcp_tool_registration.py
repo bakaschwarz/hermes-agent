@@ -458,6 +458,14 @@ def _register_server_tools(name: str, server: "MCPServerTask", config: dict) -> 
     return registered
 
 
+def _per_session_config(config: dict) -> bool:
+    """A server whose state is the workspace it was started in: one child per session, never shared."""
+    value = (config or {}).get("per_session")
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
 def _connection_identity(config: dict) -> tuple:
     """What makes one live connection reusable for another profile: the route fingerprint PLUS
     everything that authenticates or secures it (``config_fingerprint`` deliberately excludes
@@ -594,6 +602,10 @@ def _register_connected_into_current_scope(servers: dict) -> int:
     registered_servers = 0
     for name, config in servers.items():
         if not mcp_server_enabled(config):
+            continue
+        if _per_session_config(config):
+            # Never borrow another scope's child: the server's state is its workspace, so this
+            # session must open its own in its own cwd (``gateway.session_mcp_scope``).
             continue
         with _core._lock:
             if _server_key(name, scope, current=False) in _core._servers:
