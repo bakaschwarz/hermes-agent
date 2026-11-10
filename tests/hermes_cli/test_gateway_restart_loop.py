@@ -1796,6 +1796,50 @@ class TestLifecycleGuardDataArgumentExemption:
         check_gateway_lifecycle(prompt, str(script))
 
 
+class TestLifecycleGuardWrittenTextExemption:
+    """`echo`/`printf` only WRITE their arguments, so a quoted lifecycle command handed to
+    them is text, not a command being run (PER-766: a note, report line or commit message
+    could not mention the gateway command). The exemption stays fail-closed: a pipe into a
+    shell/interpreter or a substitution keeps the plain regex verdict, including through a
+    wrapper that carries options."""
+
+    def _scan(self, command, **kwargs):
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        return contains_gateway_lifecycle_command_or_referenced_script(
+            command, **kwargs
+        )
+
+    @pytest.mark.parametrize("command", [
+        "echo 'never run systemctl --user restart hermes-gateway from a run'",
+        "printf '%s\\n' 'systemctl --user restart hermes-gateway'",
+        "echo 'hermes gateway restart' > notes.md",
+        "printf -- '-- systemctl stop hermes-gateway\\n' >> report.txt",
+        "echo 'the guard refuses: systemctl restart hermes-gateway' >> guard.log",
+    ])
+    def test_written_lifecycle_text_is_not_blocked(self, command):
+        assert self._scan(command) is False
+
+    @pytest.mark.parametrize("command", [
+        # The pair the fix must keep apart: the same text piped into a shell still executes.
+        "echo 'systemctl --user restart hermes-gateway' | sh",
+        "printf '%s\\n' 'systemctl --user restart hermes-gateway' | bash",
+        "echo 'systemctl --user restart hermes-gateway' | /bin/bash",
+        # Wrapper options the flat pipe regex does not read: the tokenised read does.
+        "echo 'systemctl --user restart hermes-gateway' | sudo -n sh",
+        "echo 'systemctl --user restart hermes-gateway' | sudo -u root sh",
+        "echo 'systemctl --user restart hermes-gateway' | env -i sh",
+        # Substitution is execution even though the outer command is echo.
+        'echo "$(systemctl --user restart hermes-gateway)"',
+        "echo `systemctl --user restart hermes-gateway`",
+        "echo 'x' | xargs systemctl restart hermes-gateway",
+        "echo ok; systemctl --user restart hermes-gateway",
+    ])
+    def test_execution_routes_through_echo_still_block(self, command):
+        assert self._scan(command) is True
+
+
 class TestLifecycleGuardNeverRaises:
     """The guard must return a verdict for every input — binary referenced
     paths, NUL bytes, non-UTF-8, /dev/* nodes, directories, missing files —
