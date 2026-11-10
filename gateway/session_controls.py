@@ -177,7 +177,7 @@ async def _reap_owner_orphans(authority, subject, session_id):
                                     for member in list(live.subscribers.values())):
             return
         ref = SessionRef(authority.profile_id, session_id)
-        actor = Principal(subject, authority.profile_id,
+        actor = SessionActor(subject, authority.profile_id,
                           frozenset({'session:read', 'session:submit', 'session:control'}),
                           'orphan-reap')
         with authority.db._read_ctx() as conn:

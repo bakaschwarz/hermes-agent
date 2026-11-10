@@ -16,7 +16,7 @@ import pytest
 import gateway.session_managed_worker
 
 from gateway import session_controls, session_finite
-from gateway.session_contract import Principal, SessionRef
+from gateway.session_contract import SessionActor, SessionRef
 from gateway.session_controls import AuthorityConnection
 from tests.gateway.test_canonical_stop_hard_cancel import Agent
 from tests.gateway.test_session_authority_cancel_settlement import (
@@ -90,7 +90,7 @@ async def test_owner_death_reap_honours_a_reconnect(tmp_path, monkeypatch):
         conn = AuthorityConnection(authority, object(), HUMAN_IDENTITY)
         await conn.close()
         # Same principal, back before the grace expires: the reload re-attaches its session.
-        reconnected = Principal(ACTOR.subject, 'owned',
+        reconnected = SessionActor(ACTOR.subject, 'owned',
                                 frozenset({'session:read', 'session:control'}), 'reconnect')
         await authority.attach(reconnected, REF)
         assert (ACTOR.subject, REF.session_id) not in authority._pending_orphan_reaps
