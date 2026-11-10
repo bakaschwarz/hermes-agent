@@ -107,6 +107,7 @@ from tools.browser_session_lifecycle import cleanup_browser
 from tools.connectors.turn import agent_connection_surface, scoped_connection_surface
 
 from agent.memory_provider import is_trivial_prompt
+from agent.dispatch_brief import memory_query
 from agent.client_lifecycle import ClientLifecycleMixin
 from agent.stream_delivery import StreamDeliveryMixin
 from agent.status_output import StatusOutputMixin
@@ -914,7 +915,11 @@ class AIAgent(
             self._memory_manager.sync_all(user_text, response_text, **sync_kwargs)
             # Sibling of the build_turn_context() prefetch gate: don't key recall on zero-signal prompts.
             if not is_trivial_prompt(user_text):
-                self._memory_manager.queue_prefetch_all(user_text, session_id=self.session_id or "")
+                # Same bounded query the next prefetch will ask with (dispatch briefs reduce to
+                # their subject); a queued entry keyed on anything else is a recall nobody reads.
+                self._memory_manager.queue_prefetch_all(
+                    memory_query(user_text), session_id=self.session_id or ""
+                )
         except Exception:
             pass
 
