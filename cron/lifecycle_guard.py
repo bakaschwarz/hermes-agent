@@ -964,6 +964,41 @@ def _has_binary_magic(data: bytes) -> bool:
     return data.startswith(_BINARY_MAGICS)
 
 
+# The referenced-script walk models POSIX shell semantics: a path-shaped token in a shell script is
+# a command. A script written for another interpreter has no such semantics — a node shim's
+# ``require("./_tsc.js")`` is module resolution, not an executed command — so following those tokens
+# reads megabytes of a dependency tree the shell never touches (the TypeScript compiler bundle is
+# 6 MB; a bundled CLI resolves ~100 sibling chunks) and then refuses the whole command on the walk
+# budget. Such a file is still SCANNED as text, so a literal lifecycle command in it is still found;
+# only the recursion into its path-shaped tokens is skipped.
+_POSIX_SHELL_INTERPRETERS = frozenset({"sh", "bash", "dash", "ksh", "zsh", "fish"})
+_ENV_SHEBANG = "env"
+
+
+def _shebang_program(text: str) -> Optional[str]:
+    """Program named by a ``#!`` first line (``/usr/bin/env -S node --flag`` -> ``node``); ``None``
+    when the text carries no shebang at all."""
+    line = text.lstrip("\ufeff").split("\n", 1)[0]
+    if not line.startswith("#!"):
+        return None
+    words = line[2:].split()
+    if not words:
+        return ""
+    program = Path(words[0]).name.lower()
+    if program == _ENV_SHEBANG:
+        rest = [word for word in words[1:] if word not in {"-S", "--split-string"}]
+        program = Path(rest[0]).name.lower() if rest else ""
+    return program
+
+
+def _is_posix_shell_script(text: str) -> bool:
+    """Whether the walk may follow *text*'s path tokens as shell commands: a POSIX-shell shebang,
+    or no shebang at all (a file handed to ``bash script`` needs none). Another interpreter's
+    shebang (node, python, perl, ...) means those tokens are that language's syntax."""
+    program = _shebang_program(text)
+    return program is None or program in _POSIX_SHELL_INTERPRETERS
+
+
 def _read_referenced_script(
     path: Path, *, max_bytes: Optional[int] = None
 ) -> tuple[Optional[str], bool]:
@@ -1028,8 +1063,18 @@ def _read_referenced_script_unlocked(
         if _has_binary_magic(data):
             return None, False
         # A regular file whose size already exceeds the cap fails closed without reading it (the
-        # walk budget can be far below 1 MiB).
+        # walk budget can be far below 1 MiB) — unless its shebang names a non-shell interpreter:
+        # then it is not a POSIX shell script, so the walk has no command semantics for it and
+        # skipping it (as a compiled binary is skipped above) leaves nothing unexamined. The
+        # shebang is read from the sniffed prefix, so the oversized file is never opened further.
         if metadata.st_size > byte_limit:
+            interpreter = _shebang_program(data.decode("utf-8", errors="replace"))
+            if interpreter is not None and interpreter not in _POSIX_SHELL_INTERPRETERS:
+                logger.info(
+                    "lifecycle guard skips an oversized %s script (%d bytes): the shell walk does "
+                    "not apply to it", interpreter or "interpreted", metadata.st_size,
+                )
+                return None, False
             return None, True
         # Read the remainder (bounded); loop because os.read may return short.
         while len(data) <= byte_limit:
@@ -1093,22 +1138,29 @@ def _read_script_for_scanning(script_path: str) -> tuple[str, Optional[str]]:
 def _contains_unsafe_gateway_action(
     command: str, *, cwd: Optional[str], depth: int, visited: set[Path], budget: _LifecycleScanBudget,
     read_remote_script: Optional[_ReadRemoteScriptFn] = None, executed: bool = True,
+    walk: bool = True,
 ) -> bool:
     """``executed=False`` means *command* is the content of a file that is only MENTIONED in inert
     (masked) text: it is still scanned for a literal lifecycle command, but "could not scan" (budget,
-    depth, size, device, live SQLite, cloud) is "nothing to scan" there, never a block (#113944)."""
+    depth, size, device, live SQLite, cloud) is "nothing to scan" there, never a block (#113944).
+
+    ``walk=False`` means *command* is the content of a non-shell script (``_is_posix_shell_script``):
+    it is scanned for a literal lifecycle command like any other text, but its path-shaped tokens are
+    that language's syntax, not commands the shell executes, so they are not followed."""
     # Charge BEFORE _direct_lifecycle_scan: every scan in it tokenizes with shlex.
     if not budget.charge_text(command):
         return _budget_exhausted(budget, "text", depth) if executed else False
     if _direct_lifecycle_scan(command):
         return True
+    if not walk:
+        return False
     if depth >= _MAX_REFERENCED_SCRIPT_DEPTH:
         return executed
 
-    def recurse(text: str, cwd: Optional[str], executed: bool) -> bool:
+    def recurse(text: str, cwd: Optional[str], executed: bool, *, walk: bool = True) -> bool:
         return _contains_unsafe_gateway_action(
             text, cwd=cwd, depth=depth + 1, visited=visited, budget=budget,
-            read_remote_script=read_remote_script, executed=executed,
+            read_remote_script=read_remote_script, executed=executed, walk=walk,
         )
 
     # The walks below must see the same masked view `_direct_lifecycle_scan` sees (#110422): a
@@ -1176,7 +1228,12 @@ def _contains_unsafe_gateway_action(
         if not script_text:
             continue
         # Relative references inside a script resolve against that script's directory, not the cwd.
-        if recurse(script_text, _resolve_script_directory(str(resolved)) or cwd, candidate_executed):
+        # A non-shell script (node/python/...) is scanned for a literal lifecycle command but its
+        # path-shaped tokens are not followed: those are that language's syntax, not commands.
+        if recurse(
+            script_text, _resolve_script_directory(str(resolved)) or cwd, candidate_executed,
+            walk=_is_posix_shell_script(script_text),
+        ):
             return True
     return False
 
