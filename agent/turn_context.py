@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from agent.conversation_compression import recover_rotated_compression_session
+from agent.dispatch_brief import memory_query
 from agent.iteration_budget import IterationBudget
 from agent.memory_context import build_memory_context_block, sanitize_context
 from agent.memory_provider import is_trivial_prompt
@@ -1016,9 +1017,13 @@ def _bind_interrupt_scope(agent: Any, ra) -> None:
 def _memory_query_text(original_user_message: Any) -> str:
     """Semantic text of the turn for memory queries: a multimodal (list) turn carries its text
     in parts, so keying off ``isinstance(str)`` collapsed it to ``""`` and ``is_trivial_prompt``
-    skipped prefetch entirely. An image-only turn still flattens to ``""`` (trivial)."""
+    skipped prefetch entirely. An image-only turn still flattens to ``""`` (trivial).
+
+    A harness-dispatched turn is one big envelope (identity block, wake payload, history) whose
+    only semantic line is the payload's subject, so the envelope is what ``dispatch_brief``
+    reduces; ranking the envelope itself left the recall block empty on every dispatched run."""
     if isinstance(original_user_message, (str, list)):
-        return flatten_message_text(original_user_message)
+        return memory_query(flatten_message_text(original_user_message))
     return ""
 
 
