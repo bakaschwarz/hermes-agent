@@ -681,7 +681,9 @@ class GatewayAgent:
         if supported is None:
             try:
                 described = self.connection.call("runtime.describe", timeout=5) or {}
-            except Exception:  # health: a derived detail -- always allow BLE001 -- never blocks a turn
+            except Exception:  # health: allow BLE001 -- a refused capability probe means no turn_env, never a failed turn
+                logger.debug("runtime.describe refused; assuming the gateway has no turn-env-v1",
+                             exc_info=True)
                 described = {}
             capabilities = described.get("capabilities") if isinstance(described, dict) else None
             supported = self._turn_env_supported = (
