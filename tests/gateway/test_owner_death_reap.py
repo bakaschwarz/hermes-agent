@@ -62,8 +62,6 @@ async def test_owner_death_reap_stops_the_started_turn(tmp_path, monkeypatch):
         with db._read_ctx() as conn2:
             row = conn2.execute('SELECT status, outcome FROM session_admissions WHERE admission_id=?',
                                 (receipt.admission_id,)).fetchone()
-    # The load-bearing claim is the Stop delivery (agent.stops above); the ledger outcome depends
-    # on how the turn reacts to it, which this fake execute does not model (the real worker's
     # The load-bearing claim is the Stop delivery (agent.stops above). The ledger outcome
     # depends on how the turn reacts to it, which this fake execute does not model.
     assert row['status'] == 'terminal', f'the orphaned admission never settled: {tuple(row)}'
@@ -75,11 +73,13 @@ async def test_owner_death_reap_honours_a_reconnect(tmp_path, monkeypatch):
     agent = Agent()
     authority.runner._cached_agent_for = {}.get
     claimed = asyncio.Event()
+    finished = asyncio.Event()
 
     async def execute(authority, ref, row):
         _wire_turn_agent(authority, row['generation'], agent)
         claimed.set()
-        await asyncio.sleep(0.05)
+        # Stand-in for a live turn: it hangs until this test releases it, never on the clock.
+        await asyncio.wait_for(finished.wait(), 5)
         return 'done'
     monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
     monkeypatch.setattr(session_controls, 'ORPHAN_REAP_GRACE_SECONDS', 0.05)
@@ -94,6 +94,7 @@ async def test_owner_death_reap_honours_a_reconnect(tmp_path, monkeypatch):
                                 frozenset({'session:read', 'session:control'}), 'reconnect')
         await authority.attach(reconnected, REF)
         assert (ACTOR.subject, REF.session_id) not in authority._pending_orphan_reaps
+        finished.set()
         await asyncio.wait_for(authority.sessions['s'].task, 5)
         with db._read_ctx() as conn2:
             row = conn2.execute('SELECT status, outcome FROM session_admissions WHERE admission_id=?',
