@@ -11,7 +11,12 @@ so the recall block comes back empty on precisely the runs that need it most. ``
 reads the subject the envelope already carries (``- issue: PER-765 <title>``), which is
 semantic and inside any provider's budget.
 
-A turn that carries no envelope is left alone: ``memory_query`` is the identity there.
+A turn that carries no envelope is its own query — but never an oversized one. Past a
+provider's query cap (gbrain rejects a ``--question`` over 2000 chars outright with
+``invalid_params``, and after PER-754 the plugin skips such a call instead), recall dies
+silently on exactly the turns that paste a log or trace in. ``memory_query`` windows such a
+message to its head and its tail — a paste's question is usually the trailing line — while
+every message inside the budget passes through untouched.
 """
 
 from __future__ import annotations
@@ -22,6 +27,14 @@ from typing import Any
 # A query, not a document: long enough for "KEY-123 <title> — <scope>", short enough that no
 # provider's length cap bites (gbrain rejects a question over 2000 chars outright).
 _MAX_SUBJECT_CHARS = 500
+# The same rule for a turn that carries no envelope: a chat message pastes a log or trace and
+# asks about it at the end, and a provider past its cap ranks nothing (gbrain: 2000 chars, then
+# ``invalid_params``; the plugin skips instead of sending). Budget stays well under that cap.
+_MAX_QUERY_CHARS = 1500
+# Enough of the opening to keep the framing ("here is the trace — why does X fail?").
+_WINDOW_HEAD_CHARS = 500
+# Marks the cut so a debug log shows the query was windowed, not that the text was mangled.
+_WINDOW_OMITTED = " … "
 # Below this an envelope is shorter than the boilerplate it would have to beat, so there is
 # nothing to gain from rewriting the turn's text.
 _MIN_BRIEF_CHARS = 600
@@ -50,6 +63,28 @@ def _bound(text: str) -> str:
         return text
     cut = text[:_MAX_SUBJECT_CHARS].rsplit(" ", 1)[0]
     return cut.rstrip(" ,;:-—–") or text[:_MAX_SUBJECT_CHARS]
+
+
+def _window(text: str) -> str:
+    """An ordinary message is its own query — unless it is too big to be one.
+
+    Cut to ``_MAX_QUERY_CHARS`` keeping both ends: the head carries what the message is about,
+    the tail carries the ask (a pasted log ends in its question, and a "why does this fail?"
+    opening is at the head). Both edges land on a word boundary; inside the budget the text is
+    returned exactly as it came in.
+    """
+    if len(text) <= _MAX_QUERY_CHARS:
+        return text
+    flat = " ".join(text.split())
+    head_budget = min(_WINDOW_HEAD_CHARS, (_MAX_QUERY_CHARS - len(_WINDOW_OMITTED)) // 2)
+    head = flat[:head_budget]
+    if " " in head:
+        head = head.rsplit(" ", 1)[0]
+    tail_budget = _MAX_QUERY_CHARS - len(_WINDOW_OMITTED) - len(head)
+    tail = flat[-tail_budget:]
+    if " " in tail:
+        tail = tail.split(" ", 1)[1]
+    return f"{head}{_WINDOW_OMITTED}{tail}"
 
 
 def _task_context_subject(text: str) -> str:
@@ -85,7 +120,8 @@ def task_subject(text: Any) -> str:
 
 def memory_query(text: Any) -> str:
     """What a memory provider should rank a turn against: the brief's subject when the turn is
-    a dispatch envelope, ``text`` itself otherwise (``""`` for non-text)."""
+    a dispatch envelope, the turn's own text (windowed to a query-sized head + tail) otherwise,
+    and ``""`` for non-text."""
     if not isinstance(text, str):
         return ""
-    return task_subject(text) or text
+    return task_subject(text) or _window(text)
