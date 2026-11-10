@@ -5,6 +5,10 @@ head and tail are repeated harness boilerplate; the task is named once, in the p
 ``- issue:`` line. Handing the envelope to a memory provider as a query ranked the
 boilerplate (and a provider capping query length rejected it outright), so the recall block
 was empty on every dispatched run.
+
+Also the ordinary-chat counterpart (PER-768): a turn that is not an envelope still may not be
+handed over as a document — a pasted log or trace is windowed to a query-sized head + tail, so
+the provider's own cap (gbrain: 2000 chars) never rejects it.
 """
 
 from __future__ import annotations
@@ -81,10 +85,43 @@ def test_the_subject_is_a_bounded_query():
     assert subject.endswith(f"word{subject.count('word') - 1}")
 
 
-def test_an_ordinary_long_message_is_left_alone():
-    text = "Here is the stack trace I keep hitting on the lopro forms init path:\n" + ("x" * 30_000)
+def test_an_ordinary_message_inside_the_budget_is_left_alone():
+    text = "Here is the stack trace, why does forms init throw before the schema load?"
     assert task_subject(text) == ""
     assert memory_query(text) == text
+
+
+def test_an_ordinary_long_message_is_windowed_to_a_query():
+    question = "why does the forms init path throw before the schema load?"
+    text = ("Here is the stack trace I keep hitting on the lopro forms init path:\n"
+            + ("x" * 30_000) + "\n\n" + question)
+
+    query = memory_query(text)
+
+    assert 0 < len(query) <= 1500  # under gbrain's 2000-char cap, so no provider rejects it
+    assert query.startswith("Here is the stack trace I keep hitting")
+    assert query.endswith(question)  # a paste's question is its trailing line
+    assert "x" * 1500 not in query
+
+
+def test_the_window_edges_fall_on_word_boundaries():
+    text = " ".join(f"w{i}" for i in range(2_000))
+
+    head, tail = memory_query(text).split(" … ")
+
+    for part in (head, tail):
+        assert part
+        assert all(token.startswith("w") and token[1:].isdigit() for token in part.split(" "))
+
+
+def test_a_message_just_over_the_budget_still_keeps_both_ends():
+    text = ("alpha " * 300) + ("omega " * 300)  # 3,600 chars, well over the budget
+
+    query = memory_query(text)
+
+    assert len(query) <= 1500
+    assert query.startswith("alpha alpha")
+    assert query.endswith("omega")
 
 
 def test_a_short_message_that_quotes_a_payload_is_left_alone():
@@ -120,6 +157,19 @@ def test_turn_start_prefetch_asks_with_the_subject():
     record: list[tuple[str, Any]] = []
     _memory_turn_start_and_prefetch(_stub_agent(record), text)
     assert record == [("on_turn_start", _SUBJECT), ("prefetch_all", _SUBJECT)]
+
+
+def test_turn_start_on_a_pasted_log_asks_with_a_bounded_query():
+    question = "why does the forms init path throw before the schema load?"
+    text = "Here is the trace:\n" + ("E forms.init 500\n" * 1_500) + question
+    record: list[tuple[str, Any]] = []
+
+    _memory_turn_start_and_prefetch(_stub_agent(record), text)
+
+    assert [kind for kind, _ in record] == ["on_turn_start", "prefetch_all"]
+    for _, query in record:
+        assert len(query) <= 1500
+        assert query.endswith(question)
 
 
 def test_queued_prefetch_is_keyed_on_the_same_subject():
