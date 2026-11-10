@@ -1209,7 +1209,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         policy = policy_for_source(self._runner, self._ctx.source)
         with ExitStack() as scope:
             try:
-                scope.enter_context(policy_scope(policy, authority=active_authority(self._runner)))
+                scope.enter_context(policy_scope(policy, authority=active_authority(self._runner),
+                                                 session_id=self._ctx.session_id))
             except RuntimeStoreError as exc:
                 result = refused_turn_result(policy, exc)
                 if result is None:
