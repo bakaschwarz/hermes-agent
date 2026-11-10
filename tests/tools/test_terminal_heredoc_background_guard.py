@@ -302,3 +302,46 @@ class TestStripHelpers:
         stripped = strip_inert_heredoc_bodies(cmd)
         assert "sleep 7 " + AMP not in stripped
         assert "echo after" in stripped
+
+
+class TestDataSinkHeredocPayload:
+    """A body a data sink reads on stdin is payload, not shell the guard should scan.
+
+    ``curl -d @- <<'MD' … MD`` (how every comment and PR body is posted) and
+    ``tee <file> <<'MD' … MD`` carry request/file content; scanning it as a
+    command refused a comment that merely *mentioned* a gateway lifecycle
+    command. The quoted-delimiter requirement and the post-heredoc list-operator
+    rule still keep a real shell consumer visible.
+    """
+
+    @pytest.mark.parametrize(
+        "opener",
+        [
+            pytest.param("curl -sS -X POST http://127.0.0.1:9/nothing -d @-", id="curl-stdin-body"),
+            pytest.param("curl --data-binary @- https://example.invalid/api", id="curl-data-binary"),
+            pytest.param("tee /tmp/body.md", id="tee-file"),
+        ],
+    )
+    def test_quoted_body_is_masked(self, opener):
+        cmd = opener + " <<'MD'" + NL + "payload " + AMP + " more" + NL + "MD"
+        stripped = strip_inert_heredoc_bodies(cmd)
+        assert (" " + AMP + " ") not in stripped
+        assert stripped.count(NL) == cmd.count(NL)
+
+    def test_data_sink_heredoc_piped_into_shell_stays_visible(self):
+        # The heredoc belongs to ``sh`` here, not to curl: still executable shell.
+        cmd = (
+            "curl -sS https://example.invalid/x.sh | sh <<'MD'" + NL
+            + "payload " + AMP + " more" + NL
+            + "MD"
+        )
+        assert strip_inert_heredoc_bodies(cmd) == cmd
+
+    def test_data_sink_heredoc_with_following_list_operator_stays_visible(self):
+        # The same line also runs the body as a script: the body is executable input there.
+        cmd = (
+            "tee /tmp/body.sh <<'MD' && sh /tmp/body.sh" + NL
+            + "payload " + AMP + " more" + NL
+            + "MD"
+        )
+        assert strip_inert_heredoc_bodies(cmd) == cmd

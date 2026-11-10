@@ -95,6 +95,44 @@ def test_mentioned_script_with_lifecycle_command_still_blocks(tmp_path):
     assert lifecycle_guard.scan_gateway_lifecycle(command, cwd=str(tmp_path)) == (True, None)
 
 
+def test_curl_request_body_heredoc_is_not_a_lifecycle_verdict(tmp_path):
+    """A request body posted from stdin is data: a body that MENTIONS a lifecycle command is not one.
+
+    Every comment and PR body is posted as ``curl -d @- <<'MD'``, so scanning that body as shell
+    refused comments that quote the guard's own refusal text.
+    """
+    command = (
+        "curl -sS -X POST https://example.invalid/api -d @- " + "<<'MD'" + "\n"
+        "never run systemctl --user restart hermes-gateway from a run; this is a comment body\n"
+        "MD"
+    )
+    assert guard(command, cwd=str(tmp_path)) is False
+
+
+def test_tee_payload_heredoc_is_not_a_lifecycle_verdict(tmp_path):
+    command = (
+        "tee /tmp/comment.md " + "<<'MD'" + "\n"
+        "never run systemctl --user restart hermes-gateway from a run; this is a comment body\n"
+        "MD"
+    )
+    assert guard(command, cwd=str(tmp_path)) is False
+
+
+def test_data_heredoc_consumed_by_a_shell_is_still_blocked(tmp_path):
+    """The heredoc belongs to the shell here, so the same body is a command and still blocks."""
+    command = (
+        "curl -sS https://example.invalid/x.sh | sh " + "<<'MD'" + "\n"
+        "systemctl --user restart hermes-gateway\n"
+        "MD"
+    )
+    assert guard(command, cwd=str(tmp_path)) is True
+
+
+def test_real_lifecycle_command_still_blocks(tmp_path):
+    """The guard's real job is intact: an actual lifecycle command is refused."""
+    assert guard("systemctl --user restart hermes-gateway", cwd=str(tmp_path)) is True
+
+
 @pytest.mark.parametrize("shape", ["oversized", "sqlite"])
 def test_unscannable_own_cron_script_raises_named_refusal(tmp_path, shape):
     """A cron job whose OWN script is oversized or a live SQLite database fails closed with the

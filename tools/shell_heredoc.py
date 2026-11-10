@@ -2,20 +2,23 @@
 cron lifecycle_guard) that false-positive on heredoc *bodies*. Stripping every body is unsafe the
 other way (a fake ``<<`` in quotes can swallow an operator; unquoted bodies expand; ``bash <<'EOF'``
 executes), so a body is masked ONLY when every delimiter is quoted, every heredoc has an exact
-terminator line, the owning simple command is an allowlisted non-shell interpreter, and no list
-operator follows the heredoc. Otherwise the command is returned untouched: a false positive is
-acceptable, hiding shell syntax from a guard is not.
+terminator line, the owning simple command is an allowlisted data consumer (a non-shell
+interpreter, or a plumbing sink such as ``cat``/``tee``/``curl`` whose stdin is the payload),
+and no list operator follows the heredoc. Otherwise the command is returned untouched: a false
+positive is acceptable, hiding shell syntax from a guard is not.
 Masked bodies keep their newline count (re.MULTILINE)."""
 
 from __future__ import annotations
 
 import re
 
-# Non-shell interpreters whose quoted heredoc bodies are data for THAT interpreter; optional
-# VAR=... assignments, ``env`` and a path prefix allowed. Narrow on purpose: unmatched = visible.
+# Commands whose quoted heredoc body is DATA they read on stdin, never shell they execute: a
+# non-shell interpreter (the body is that language's source), a plain sink (cat/tee write stdin
+# through) and curl (``curl -d @- <<'MD'`` posts the body as request data). Optional VAR=...
+# assignments, ``env`` and a path prefix allowed. Narrow on purpose: unmatched = visible.
 _INERT_HEREDOC_CONSUMER_RE = re.compile(
     r"^\s*(?:[A-Z_][A-Z0-9_]*=\S+\s+)*(?:env\s+)?(?:[A-Za-z0-9_./-]+/)?"
-    r"(?:python(?:3(?:\.\d+)*)?|osascript|cat)(?=\s|$)",
+    r"(?:python(?:3(?:\.\d+)*)?|osascript|cat|tee|curl)(?=\s|$)",
     re.IGNORECASE)
 
 
