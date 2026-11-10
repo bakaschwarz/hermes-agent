@@ -981,6 +981,86 @@ def _iter_shell_command_payloads(command: str) -> Iterator[str]:
                 break
 
 
+# --- execution hand-offs inside a masked body -------------------------------------------------
+#
+# A masked heredoc body is inert *shell*, but the interpreter that owns it still runs code. A path
+# the body HANDS to an execution primitive is a script the run executes, and the mask would hide it
+# from the walk. A path the body only READS (`json.load(open('ticket.json'))`, a markdown note, a
+# log) is data: reading that file and treating a lifecycle phrase inside it as a command refused
+# every run which quoted the guard's own message. Only the hand-off shapes below are walked.
+
+# The primitive whose argument the path is, once the opening quote/bracket between them is trimmed.
+_EXECUTION_PRIMITIVE_TAIL_RE = re.compile(
+    r"(?i)(?:"
+    r"\bos\.(?:system|popen|exec\w*|spawn\w*)"
+    r"|subprocess\.(?:run|call|check_call|check_output|popen|getoutput|getstatusoutput)"
+    r"|runpy\.run_\w+"
+    r"|(?:^|[^.\w])(?:exec|eval|system|popen)"
+    r")\s*$"
+)
+# A call still open at the token: `os.spawnl(os.P_WAIT, '/x/restart.sh')`, `subprocess.run(cmd, …)`.
+_OPEN_EXECUTION_CALL_RE = re.compile(
+    r"(?i)\b(?:os\.(?:system|popen|exec\w*|spawn\w*)|subprocess\.\w+|runpy\.run_\w+)\s*\([^()]*$"
+)
+# `sh -c '…'` / `bash -c "…"`: the shell's own argument is a command line.
+_SHELL_COMMAND_TAIL_RE = re.compile(r"(?i)\b(?:sh|bash|dash|zsh|ksh|fish)\s+(?:-\S+\s+)*-c\s*$")
+# AppleScript's `do shell script "…"`.
+_APPLESCRIPT_COMMAND_TAIL_RE = re.compile(r"(?i)\bdo\s+shell\s+script\s*$")
+
+# Characters a language puts between a call and the literal argument, trimmed before the tail test.
+_CALL_OPENERS = " \t'\"([,"
+# Path-shaped tokens inside a body: `/`-rooted and `./`-relative paths, plus shell-suffixed names —
+# the same shapes `_references_at` executes (a bare `restart` with no slash is not one of them).
+_BODY_PATH_TOKEN_RE = re.compile(
+    r"""(?<![\w./@%\-+~])(?P<path>(?:~|\.{1,2})?/[\w./@%+~\-]*|[\w][\w.\-]*\.(?:sh|bash|zsh))"""
+)
+
+
+def _mentions_execution_handoff(prefix: str) -> bool:
+    """Whether the body text *prefix* before a path-shaped token hands that path to something that
+    RUNS it rather than to something that reads it.
+
+    ``os.system('/x/restart.sh')`` and ``subprocess.run(['/x/restart.sh'])`` are execution; the same
+    token inside ``json.load(open('/x/restart.sh'))`` is a file being read, and its text is data.
+    Only the call whose argument the token is counts, so the prefix is reduced to the text after
+    the last opening quote/bracket before testing it.
+    """
+    tail = prefix[-200:].rstrip()
+    while tail and tail[-1] in _CALL_OPENERS:
+        tail = tail[:-1].rstrip()
+    return bool(
+        _EXECUTION_PRIMITIVE_TAIL_RE.search(tail)
+        or _OPEN_EXECUTION_CALL_RE.search(tail)
+        or _SHELL_COMMAND_TAIL_RE.search(tail)
+        or _APPLESCRIPT_COMMAND_TAIL_RE.search(tail)
+    )
+
+
+def _iter_body_execution_mentions(command: str, masked: str, *, cwd: Optional[str]) -> Iterator[Path]:
+    """Yield the paths an inert (masked) heredoc body hands to an execution primitive.
+
+    The walk must read those files — ``os.system('/x/restart.sh')`` inside a Python body restarts
+    the gateway just as a shell would. Everything else named in the body is data the run reads, and
+    scanning it made the file's own text a verdict (a ticket dump or a note quoting the lifecycle
+    command refused the call). ``_iter_referenced_shell_scripts`` cannot tell the two apart: it
+    reads shell command semantics into tokens that are that interpreter's syntax, so every path
+    token is a "referenced script". This pass asks the one question that separates them — is the
+    token an argument of something that executes?
+    """
+    raw_lines = command.split("\n")
+    masked_lines = masked.split("\n")
+    if len(raw_lines) != len(masked_lines):
+        # The views cannot be aligned, so no mention can be shown to be a hand-off: read nothing.
+        return
+    for raw_line, masked_line in zip(raw_lines, masked_lines):
+        if raw_line == masked_line or masked_line.strip():
+            continue  # only the lines masking blanked are body text
+        for match in _BODY_PATH_TOKEN_RE.finditer(raw_line):
+            if not _mentions_execution_handoff(raw_line[: match.start()]):
+                continue
+            yield from _resolved_or_nothing(match.group("path").rstrip(",;)"), cwd)
+
+
 # --- referenced-script reading ----------------------------------------------------------------
 
 def _has_binary_magic(data: bytes) -> bool:
@@ -1203,13 +1283,20 @@ def _contains_unsafe_gateway_action(
         if recurse(payload, cwd, executed):
             return True
 
-    # Paths named only inside a masked body are still READ: an interpreter body that hands
-    # `/x/restart.sh` to os.system() executes it. Only the fail-closed verdicts (cloud placeholder,
-    # oversized/binary, budget) stay restricted to the executed view — a mere data mention must not
-    # trip them. Executed candidates come first so a mention never starves a real script's budget.
+    # Paths named only inside a masked body are READ when the body HANDS them to an execution
+    # primitive: an interpreter body that passes `/x/restart.sh` to os.system() executes it. A path
+    # the body merely reads (`json.load(open('ticket.json'))`, a note, a log) is data, and scanning
+    # it turned the file's own text into a verdict — a ticket dump quoting the lifecycle command
+    # refused every run that opened it — so those mentions are not read at all. Mentions stay out
+    # of the fail-closed verdicts (cloud placeholder, oversized/binary, budget) either way: only the
+    # executed view refuses. Executed candidates come first so a mention never starves a real
+    # script's budget.
     candidates = [(path, executed) for path in _iter_referenced_shell_scripts(walk_command, cwd=cwd)]
     if walk_command != command:
-        candidates += [(path, False) for path in _iter_referenced_shell_scripts(command, cwd=cwd)]
+        candidates += [
+            (path, False)
+            for path in _iter_body_execution_mentions(command, walk_command, cwd=cwd)
+        ]
 
     for script_path, candidate_executed in candidates:
         # Do not touch a FileProvider path even to discover whether the file is hydrated.
