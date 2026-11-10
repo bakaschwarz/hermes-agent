@@ -55,7 +55,10 @@ def test_inert_heredoc_body_script_path_still_read(tmp_path):
 def test_mentioned_data_file_that_cannot_be_scanned_is_not_a_verdict(tmp_path, monkeypatch):
     """A file only MENTIONED in an inert body may exhaust the text budget (one >64 KiB line), pull
     in 64+ remote-read misses (a markdown table of paths) or be a live SQLite database: each is
-    "nothing to scan", never a block (#113944). The same file *executed* still fails closed."""
+    "nothing to scan", never a block (#113944). The same file *executed* still fails closed.
+
+    A mention the body only READS is not walked at all now — reading it is what turned a data
+    file's own text into a verdict — so the remote callback is never consulted for these."""
     from cron import lifecycle_guard
     from hermes_cli.sqlite_safe_read import connect_tracked
 
@@ -75,7 +78,7 @@ def test_mentioned_data_file_that_cannot_be_scanned_is_not_a_verdict(tmp_path, m
         for data in (minified, notes, db):
             command = f"cd {tmp_path} && python3 - <<'PY'\nt = open('{data}', encoding='utf-8').read()\nPY"
             assert guard(command, cwd=str(tmp_path), read_remote_script=remote) is False, data.name
-        assert remote_misses  # the notes table was walked and its misses were bounded, not fatal
+        assert not remote_misses  # a mention the body only reads is data: never walked, never read
         unsafe, refusal = lifecycle_guard.scan_gateway_lifecycle(f"bash {minified}")
         assert unsafe is True and "budget" in refusal
         unsafe, refusal = lifecycle_guard.scan_gateway_lifecycle(f"bash {db}")
@@ -131,6 +134,86 @@ def test_data_heredoc_consumed_by_a_shell_is_still_blocked(tmp_path):
 def test_real_lifecycle_command_still_blocks(tmp_path):
     """The guard's real job is intact: an actual lifecycle command is refused."""
     assert guard("systemctl --user restart hermes-gateway", cwd=str(tmp_path)) is True
+
+
+def test_scannable_data_file_read_in_a_heredoc_is_not_a_verdict(tmp_path):
+    """A ticket dump / note / log the body only READS is data, even when it quotes the lifecycle
+    command: ``json.load(open(...))`` is not execution, and the walk's mention read turned the
+    file's own text into the verdict."""
+    from cron import lifecycle_guard
+
+    data = tmp_path / "p763.json"
+    data.write_text(
+        '{"note": "never run systemctl --user restart hermes-gateway from a run; this is data"}\n',
+        encoding="utf-8",
+    )
+    command = f"python3 - <<'PY'\nimport json\nprint(sorted(json.load(open('{data}')).keys()))\nPY"
+    assert guard(command, cwd=str(tmp_path)) is False
+    assert lifecycle_guard.scan_gateway_lifecycle(command, cwd=str(tmp_path)) == (False, None)
+
+
+def test_data_file_named_in_a_written_heredoc_is_not_a_verdict(tmp_path):
+    """``cat > note.md <<'MD'`` writes a note; a line that STARTS with a lifecycle script path is
+    the shape the walk used to read as a referenced script, but writing a note about a script does
+    not run it."""
+    note_script = tmp_path / "restart.sh"
+    note_script.write_text("#!/bin/sh\nhermes gateway restart\n", encoding="utf-8")
+    command = (
+        f"cat > {tmp_path}/note.md <<'MD'\n"
+        f"{note_script} runs `systemctl --user restart hermes-gateway`\n"
+        "MD"
+    )
+    assert guard(command, cwd=str(tmp_path)) is False
+
+
+def test_markdown_file_read_by_an_interpreter_is_not_a_verdict(tmp_path):
+    """A notes file read with ``Path.read_text()`` is data: its lifecycle-shaped lines are text."""
+    notes = tmp_path / "notes.md"
+    notes.write_text(
+        "| /opt/tool/restart.sh | systemctl --user restart hermes-gateway |\n", encoding="utf-8"
+    )
+    command = (
+        f"python3 - <<'PY'\nfrom pathlib import Path\nprint(Path('{notes}').read_text())\nPY"
+    )
+    assert guard(command, cwd=str(tmp_path)) is False
+
+
+def test_mentioned_script_handed_to_subprocess_still_blocks(tmp_path):
+    """The mention read is kept for execution hand-offs: a script passed to ``subprocess`` runs."""
+    from cron import lifecycle_guard
+
+    script = tmp_path / "restart.sh"
+    script.write_text("#!/bin/sh\nhermes gateway restart\n", encoding="utf-8")
+    command = (
+        f"python3 - <<'PY'\nimport subprocess\n"
+        f"subprocess.run(['{script}'], check=True)\nPY"
+    )
+    assert lifecycle_guard.scan_gateway_lifecycle(command, cwd=str(tmp_path)) == (True, None)
+
+
+def test_mentioned_script_handed_to_a_shell_c_still_blocks(tmp_path):
+    """``sh -c '…'`` inside an interpreter body is a command line, so the script it names runs."""
+    from cron import lifecycle_guard
+
+    script = tmp_path / "restart.sh"
+    script.write_text("#!/bin/sh\nhermes gateway restart\n", encoding="utf-8")
+    command = f"python3 - <<'PY'\nimport os\nos.system(\"sh -c '{script}'\")\nPY"
+    assert lifecycle_guard.scan_gateway_lifecycle(command, cwd=str(tmp_path)) == (True, None)
+
+
+def test_executed_script_is_blocked_even_when_a_data_mention_precedes_it(tmp_path):
+    """A body that reads data AND runs a lifecycle script is still refused: the hand-off wins."""
+    from cron import lifecycle_guard
+
+    data = tmp_path / "ticket.json"
+    data.write_text('{"note": "systemctl --user restart hermes-gateway"}\n', encoding="utf-8")
+    script = tmp_path / "restart.sh"
+    script.write_text("#!/bin/sh\nhermes gateway restart\n", encoding="utf-8")
+    command = (
+        f"python3 - <<'PY'\nimport json, os\n"
+        f"print(json.load(open('{data}')))\nos.system('{script}')\nPY"
+    )
+    assert lifecycle_guard.scan_gateway_lifecycle(command, cwd=str(tmp_path)) == (True, None)
 
 
 @pytest.mark.parametrize("shape", ["oversized", "sqlite"])
