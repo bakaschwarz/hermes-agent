@@ -281,11 +281,14 @@ _CONTROL_CHARS = frozenset(";&|()")
 # Drive, ...).
 _CLOUD_PLACEHOLDER_MARKERS = frozenset({"Mobile Documents", "CloudStorage"})
 
-# Executables whose arguments are DATA (search patterns, SQL, log filters) and cannot execute their
-# argument text. Deliberately conservative: no `awk` (system()), no `sed` (`s///e`), no
-# `echo`/`printf` (routinely piped into a shell), no `mysql` (`\\!` and `system` escapes).
+# Executables whose arguments are DATA (search patterns, SQL, log filters, written text) and
+# cannot execute their argument text. Deliberately conservative: no `awk` (system()), no `sed`
+# (`s///e`), no `mysql` (`\\!` and `system` escapes). `echo`/`printf` only write their arguments
+# (an escape sequence stays text), so a note, a report line or a commit message quoting the
+# lifecycle command is data — the fail-closed rules below still refuse `echo '…' | sh` and
+# `echo "$(…)"`.
 _DATA_SINK_EXECUTABLES = frozenset(
-    {"grep", "egrep", "fgrep", "rg", "ag", "ack", "journalctl", "sqlite3", "psql"}
+    {"grep", "egrep", "fgrep", "rg", "ag", "ack", "journalctl", "sqlite3", "psql", "echo", "printf"}
 )
 # Argument shapes that smuggle execution back INTO a data sink (command/process substitution, psql
 # `\!`). Any hit disables masking for the whole segment — fail closed to the plain regex verdict.
@@ -718,29 +721,55 @@ def contains_launchctl_submit_command(command: str) -> bool:
     return False
 
 
+_INTERPRETER_EXECUTABLES = frozenset({"sh", "bash", "dash", "ksh", "zsh", "xargs", "eval", "source"})
+
+
+def _pipes_into_interpreter(segments: list[list[str]]) -> bool:
+    """True when a pipeline hands a segment's output to a shell/interpreter.
+
+    ``_PIPE_TO_INTERPRETER`` reads the flat text and misses a wrapper carrying options
+    (``… | sudo -n sh``) or a value (``… | sudo -u root sh``). The tokenised read peels the
+    wrapper chain with ``_executed_command_index``, so a data sink that can be piped
+    (``echo``/``printf``) cannot open a route the regex never saw.
+    """
+    piped = False
+    for segment in segments:
+        if len(segment) == 1 and set(segment[0]) <= _CONTROL_CHARS:
+            piped = segment[0].startswith("|")
+            continue
+        if piped:
+            index = _executed_command_index(segment)
+            if index is not None and _executable_name(segment[index]) in _INTERPRETER_EXECUTABLES:
+                return True
+        piped = False
+    return False
+
+
 def _mask_data_sink_arguments(text: str) -> str:
     """Replace data-sink executables' arguments with a neutral placeholder.
 
     The regex cannot tell an EXECUTED lifecycle command from the same characters as *data* (a grep
-    pattern, a SQL literal): every argument of a ``_DATA_SINK_EXECUTABLES`` segment becomes ``arg``
-    and a match that survives is a real command. Strictly fail-closed: masking is skipped when the
-    line pipes into a shell/interpreter, any argument carries an execution marker, or the line
-    cannot be tokenized. Masking can only ALLOW what the plain regex would block, never block more.
+    pattern, a SQL literal, text handed to ``echo``/``printf``): every argument of a
+    ``_DATA_SINK_EXECUTABLES`` segment becomes ``arg`` and a match that survives is a real command.
+    Strictly fail-closed: masking is skipped when the line pipes into a shell/interpreter (flat
+    regex or tokenised wrapper read), any argument carries an execution marker, or the line cannot
+    be tokenized. Masking can only ALLOW what the plain regex would block, never block more.
     """
     lines_out: list[str] = []
     changed = False
     for line in text.splitlines() or [text]:
-        if _PIPE_TO_INTERPRETER.search(line):
-            lines_out.append(line)
-            continue
         try:
             tokens = _shlex_tokens(line)
         except ValueError:
             lines_out.append(line)
             continue
+        segments = list(_split_segments(tokens, keep_controls=True))
+        if _PIPE_TO_INTERPRETER.search(line) or _pipes_into_interpreter(segments):
+            lines_out.append(line)
+            continue
 
         rebuilt: list[str] = []
-        for segment in _split_segments(tokens, keep_controls=True):
+        for segment in segments:
             index = _command_token_index(segment)
             if index is not None and Path(segment[index]).name in _DATA_SINK_EXECUTABLES:
                 arguments = segment[index + 1 :]
