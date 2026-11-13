@@ -155,7 +155,8 @@ def _stub_agent(record: list[tuple[str, Any]]) -> types.SimpleNamespace:
 def test_turn_start_prefetch_asks_with_the_subject():
     text = _envelope(issue_line=f"- issue: {_SUBJECT}", tail="y" * 22_000)
     record: list[tuple[str, Any]] = []
-    _memory_turn_start_and_prefetch(_stub_agent(record), text)
+    # turn_author / previous_message joined the signature after this test was written.
+    _memory_turn_start_and_prefetch(_stub_agent(record), text, None, "")
     assert record == [("on_turn_start", _SUBJECT), ("prefetch_all", _SUBJECT)]
 
 
@@ -164,7 +165,7 @@ def test_turn_start_on_a_pasted_log_asks_with_a_bounded_query():
     text = "Here is the trace:\n" + ("E forms.init 500\n" * 1_500) + question
     record: list[tuple[str, Any]] = []
 
-    _memory_turn_start_and_prefetch(_stub_agent(record), text)
+    _memory_turn_start_and_prefetch(_stub_agent(record), text, None, "")
 
     assert [kind for kind, _ in record] == ["on_turn_start", "prefetch_all"]
     for _, query in record:
