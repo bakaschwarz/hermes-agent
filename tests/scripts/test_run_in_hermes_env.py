@@ -95,10 +95,12 @@ def _record(root: Path, *, test_environment: bool = True) -> None:
                              test_environment=test_environment)
 
 
-def _run_in(root: Path, *command: str, sentinel: str | None = "{root}/state/facts.json"):
+def _run_in(root: Path, *command: str, sentinel: str | None = "{root}/state/facts.json",
+            env_extra: dict[str, str] | None = None):
     """Drive the runner as a caller would; the shim dir is on PATH like any tool dir."""
     env = {**os.environ, "PATH": f"{posix(root / 'shim')}{os.pathsep}{os.environ.get('PATH', '')}"}
     env.pop("__HERMES_ACTIVATED", None)
+    env.update(env_extra or {})
     if sentinel is not None:
         env["__HERMES_ACTIVATED"] = sentinel.replace("{root}", posix(root))
     return subprocess.run(
@@ -108,8 +110,9 @@ def _run_in(root: Path, *command: str, sentinel: str | None = "{root}/state/fact
     )
 
 
-def _synced(root: Path, sentinel: str | None = "{root}/state/facts.json") -> bool:
-    run = _run_in(root, "true", sentinel=sentinel)
+def _synced(root: Path, sentinel: str | None = "{root}/state/facts.json",
+            env_extra: dict[str, str] | None = None) -> bool:
+    run = _run_in(root, "true", sentinel=sentinel, env_extra=env_extra)
     assert run.returncode == 0, run.stderr
     return "SYNCED" in run.stderr
 
@@ -164,6 +167,19 @@ def test_command_runs_in_the_environment_with_its_arguments_and_exit_status(chec
                   sentinel=None)
     assert run.returncode == 7, run.stderr
     assert run.stdout.strip() == f"{posix(checkout)}/state/facts.json|zero|b c|d"
+
+
+def test_checkout_outside_the_home_finds_the_account_store(checkout: Path, tmp_path: Path):
+    """A worktree or a clone has no ``tools/`` beside it, and setup stages the
+    interpreter in the account's default store instead — so that store has to be
+    searched, or every such checkout reports no bootstrap Python."""
+    shutil.rmtree(checkout / ".venv")
+    home = tmp_path / "home"
+    _shim(home / ".hermes" / "tools" / "python-3.14.0" / "bin" / "python3")
+    # A profile home: `$HERMES_HOME/tools` is not where the store lives, as in
+    # every agent run and every worktree checkout.
+    assert _synced(checkout, env_extra={"HOME": posix(home),
+                                        "HERMES_HOME": posix(home / ".hermes" / "profiles" / "agent")})
 
 
 def test_failed_sync_runs_nothing(checkout: Path):

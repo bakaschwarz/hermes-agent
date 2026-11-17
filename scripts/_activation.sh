@@ -38,7 +38,11 @@ hermes_bootstrap_python() {
                      "$repo/venv/bin/python" "$repo/venv/Scripts/python.exe"; do
         [ -x "$candidate" ] && { printf '%s\n' "$candidate"; return 0; }
     done
-    for store in "${HERMES_RUNTIME_DIR:-}" "$repo/../tools" "${HERMES_HOME:-$HOME/.hermes}/tools"; do
+    # The account store last: setup stages the interpreter at
+    # `$HOME/.hermes/tools` whatever the home override, which is the only store a
+    # checkout outside the home (a worktree, a clone) has.
+    for store in "${HERMES_RUNTIME_DIR:-}" "$repo/../tools" "$HOME/.hermes/tools" \
+                 "${HERMES_HOME:-$HOME/.hermes}/tools"; do
         [ -n "$store" ] || continue
         for candidate in "$store"/python-*/bin/python3 "$store"/python-*/python.exe \
                          "$store"/python-*/bin/python "$store"/python-*/bin/python.exe; do
