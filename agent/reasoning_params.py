@@ -171,6 +171,13 @@ class ReasoningParamsMixin:
 
         msg = build_assistant_message(self, assistant_message, finish_reason)
         stamp_reasoning_tokens(msg, getattr(self, "_last_response_reasoning_tokens", 0))
+        # Per-message usage (PER-1045) rides the message dict, not only the agent's own row
+        # writer: the gateway persists the transcript from these dicts too.
+        pending_usage = getattr(self, "_pending_message_usage", None)
+        if isinstance(pending_usage, dict) and not (msg.get("display_metadata") or {}).get("usage"):
+            msg["display_metadata"] = {**(msg.get("display_metadata") or {}), "usage": dict(pending_usage)}
+            msg["token_count"] = pending_usage.get("total_tokens")
+            self._pending_message_usage = None
         return withhold_held_row(self, msg)
 
     def _reasoning_replay_route(self):
