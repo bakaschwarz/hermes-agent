@@ -261,6 +261,16 @@ def _db_flush_row(agent, msg: dict, is_current_turn_user: bool) -> dict[str, Any
     copy_identity_fields(msg, row)
     if isinstance(msg.get(DB_ROW_SNAPSHOT), str):
         row[DB_ROW_SNAPSHOT] = msg[DB_ROW_SNAPSHOT]
+    # Per-message usage (PER-1045): the assistant row for a call carries that call's usage, so a
+    # single turn re-read from the store renders a per-turn strip instead of only session totals.
+    # Consume-once: the next assistant row belongs to the next call.
+    # shortcut: a flush carrying two unflushed assistant rows charges both to the latest call;
+    # upgrade to a per-response key if a route ever stops flushing per round.
+    pending_usage = getattr(agent, "_pending_message_usage", None)
+    if role == "assistant" and isinstance(pending_usage, dict) and not (row.get("display_metadata") or {}).get("usage"):
+        row["display_metadata"] = {**(row.get("display_metadata") or {}), "usage": dict(pending_usage)}
+        row["token_count"] = pending_usage.get("total_tokens")
+        agent._pending_message_usage = None
     return row
 
 

@@ -636,6 +636,45 @@ def _with_tool_call_labels(message: dict) -> dict:
     return {**message, "tool_call_labels": labels} if labels else message
 
 
+_READTHROUGH_METADATA_KEYS = ("usage", "widget")
+# The one runtime tool that blocks a turn on the user's answer.
+_PENDING_QUESTION_TOOL = "clarify"
+
+
+def _with_readthrough_fields(message: dict) -> dict:
+    """Lift a row's read-through extras to top-level keys so a turn re-read from the store renders
+    as richly as a live one (PER-1045): per-turn ``usage``, an agent-authored ``widget``
+    (``{id, state}``, ADR-0012) and, on a tool result row, that call's ``duration_ms``. Additive:
+    a row whose metadata carries none of them is returned unchanged."""
+    metadata = message.get("display_metadata")
+    if not isinstance(metadata, dict):
+        return message
+    lifted = {key: metadata[key] for key in _READTHROUGH_METADATA_KEYS if metadata.get(key) is not None}
+    if message.get("role") == "tool" and metadata.get("duration_ms") is not None:
+        lifted["duration_ms"] = metadata["duration_ms"]
+    return {**message, **lifted} if lifted else message
+
+
+def _with_pending_question(messages: list) -> list:
+    """Mark the newest assistant turn as ``awaiting_user`` when its ``clarify`` call has no tool
+    result in this page (PER-1045), so the client reads "waiting on you" instead of
+    pattern-matching a tool call. Only the open (latest) page is scanned: a past turn's answer
+    may simply live beyond the fetched window."""
+    answered = {msg.get("tool_call_id") for msg in messages if isinstance(msg, dict) and msg.get("role") == "tool"}
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        for call in message.get("tool_calls") or ():
+            function = call.get("function") if isinstance(call.get("function"), dict) else {}
+            call_id = call.get("id") or call.get("call_id")
+            if function.get("name") == _PENDING_QUESTION_TOOL and call_id not in answered:
+                marked = {**message, "awaiting_user": True, "pending_question": {"tool_call_id": call_id}}
+                return [*messages[:index], marked, *messages[index + 1:]]
+        return messages  # the newest assistant row is settled
+    return messages
+
+
 def _history_profile_home(profile):
     if profile:
         return _cron_profile_home(profile)[1]
@@ -668,7 +707,7 @@ def _is_untyped_scaffold_notice(message) -> bool:
     return isinstance(content, str) and content.lstrip().startswith("[System:")
 
 
-def _project_for_display(messages: list, *, home=None, inline_images: bool = True) -> list:
+def _project_for_display(messages: list, *, home=None, inline_images: bool = True, open_turn: bool = False) -> list:
     """Replace compaction summaries with their display-only projection and hide untyped
     gateway-scaffold notices.
 
@@ -703,6 +742,7 @@ def _project_for_display(messages: list, *, home=None, inline_images: bool = Tru
     projected_messages = []
     for message in messages:
         message = _with_tool_call_labels(message)
+        message = _with_readthrough_fields(message)
         if coerce is not None:
             message = coerce(message)
         # Same read-side typing as session.resume (tui_gateway/session_history.py).
@@ -740,6 +780,8 @@ def _project_for_display(messages: list, *, home=None, inline_images: bool = Tru
             if projected.get("display_kind") != CONTENT_REFUSED_DISPLAY_KIND:
                 projected.pop("display_kind", None)
         projected_messages.append(projected)
+    if open_turn:
+        projected_messages = _with_pending_question(projected_messages)
     return project_history_commentary(projected_messages, home=home)
 
 
@@ -750,6 +792,8 @@ async def get_session_messages(
     include_compacted: bool = Query(False), inline_images: bool = Query(True)):
     if order not in (None, "oldest", "latest"):
         raise HTTPException(status_code=400, detail="order must be one of: oldest, latest")
+    # Only the newest page can hold the open turn, so only it is scanned for a pending question.
+    open_turn = order == "latest" or (order is None and limit is None)
 
     def _read(db):
         sid = _resolve_session_id(db, session_id)
@@ -759,7 +803,7 @@ async def get_session_messages(
         # Always page (an omitted limit used to load whole transcripts). Explicit
         # pagination anchors at the start; the default view is the latest page.
         default_page = limit is None
-        latest_page = order == "latest" or (order is None and default_page)
+        latest_page = open_turn
         _limit = 500 if default_page else min(limit, 500)
         # Include compression-ancestor messages so the REST transcript
         # matches the gateway's session.resume (which uses
@@ -777,7 +821,7 @@ async def get_session_messages(
     sid, _limit, messages = result
     projected_messages = await asyncio.to_thread(
         _project_for_display, messages, home=_history_profile_home(profile),
-        inline_images=inline_images)
+        inline_images=inline_images, open_turn=open_turn)
     return {
         "session_id": sid,
         # The same stamp list rows carry, so the Desktop keys a page under the

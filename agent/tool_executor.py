@@ -1160,6 +1160,10 @@ def _commit_tool_result(
                 tool_message["display_metadata"] = metadata
         except Exception as callback_error:
             logging.debug("Tool result metadata callback error: %s", callback_error)
+    # Per-call latency for the transcript read-through (PER-1045): merged after the callback so
+    # neither the callback's metadata nor the duration is lost.
+    tool_message["display_metadata"] = {
+        **(tool_message.get("display_metadata") or {}), "duration_ms": int(tool_duration * 1000)}
     stamp_data_use(tool_message, sorted(data_use))
     messages.append(tool_message)
     if not _flush_session_db_after_tool_progress(agent, messages, stage=f"tool result {function_name}"):

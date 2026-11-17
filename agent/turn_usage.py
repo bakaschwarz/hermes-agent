@@ -262,6 +262,17 @@ def record_response_usage(
     agent.session_cost_status = cost_result.status
     agent.session_cost_source = cost_result.source
 
+    # Per-message usage for the transcript read-through (PER-1045): the next assistant row
+    # persisted takes this call's usage and clears it — one API call, one row.
+    agent._pending_message_usage = {
+        **usage_dict,
+        "cost_usd": _cost_delta,
+        "cost_status": cost_result.status,
+        "cost_source": cost_result.source,
+        "model": agent.model,
+        "api_duration_ms": int(api_duration * 1000),
+    }
+
     # Persist per-call token deltas for any session_id so non-CLI runs can't lose
     # accounting; gateway/session-store writes use absolute totals and safely overwrite
     # these deltas. Enqueued, not written (a cold state.db UPDATE here stalled the tool
