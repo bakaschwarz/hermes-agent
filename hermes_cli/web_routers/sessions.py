@@ -645,7 +645,10 @@ def _with_readthrough_fields(message: dict) -> dict:
     """Lift a row's read-through extras to top-level keys so a turn re-read from the store renders
     as richly as a live one (PER-1045): per-turn ``usage``, an agent-authored ``widget``
     (``{id, state}``, ADR-0012) and, on a tool result row, that call's ``duration_ms``. Additive:
-    a row whose metadata carries none of them is returned unchanged."""
+    a row whose metadata carries none of them is returned unchanged.
+
+    ``widget`` is the transport, not the capability: it is written by whichever tool emits one
+    through its result-metadata callback, and no tool in this tree emits one yet."""
     metadata = message.get("display_metadata")
     if not isinstance(metadata, dict):
         return message
@@ -659,7 +662,10 @@ def _with_pending_question(messages: list) -> list:
     """Mark the newest assistant turn as ``awaiting_user`` when its ``clarify`` call has no tool
     result in this page (PER-1045), so the client reads "waiting on you" instead of
     pattern-matching a tool call. Only the open (latest) page is scanned: a past turn's answer
-    may simply live beyond the fetched window."""
+    may simply live beyond the fetched window.
+
+    Only the newest assistant row counts — a row after an unanswered ``clarify`` means the turn
+    moved on, so a client must not read such a row as a question."""
     answered = {msg.get("tool_call_id") for msg in messages if isinstance(msg, dict) and msg.get("role") == "tool"}
     for index in range(len(messages) - 1, -1, -1):
         message = messages[index]
