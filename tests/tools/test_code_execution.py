@@ -84,6 +84,32 @@ def _mock_handle_function_call(function_name, function_args, task_id=None, user_
     return json.dumps({"error": f"Unknown tool in mock: {function_name}"})
 
 
+class TestToolCallList(unittest.TestCase):
+    """The envelope's call list names what the code chained and nothing else."""
+
+    def test_names_every_call_in_dispatch_order(self):
+        from tools.code_execution_rpc import tool_calls_since
+
+        log = [{"tool": "terminal", "args_preview": "echo hi", "duration": 0.2},
+               {"tool": "read_file", "args_preview": "notes.md", "duration": 0.1, "error": "no such file"}]
+        self.assertEqual(tool_calls_since(log),
+                         [{"tool": "terminal", "status": "ok"},
+                          {"tool": "read_file", "status": "error"}])
+
+    def test_carries_neither_args_nor_duration(self):
+        """A chained call's arguments and timing are not the envelope's to republish."""
+        from tools.code_execution_rpc import tool_calls_since
+
+        [entry] = tool_calls_since([{"tool": "terminal", "args_preview": "cat secret", "duration": 3.0}])
+        self.assertEqual(entry, {"tool": "terminal", "status": "ok"})
+
+    def test_start_bounds_the_list_to_one_cell(self):
+        from tools.code_execution_rpc import tool_calls_since
+
+        log = [{"tool": "terminal"}, {"tool": "web_search"}]
+        self.assertEqual(tool_calls_since(log, start=1), [{"tool": "web_search", "status": "ok"}])
+
+
 class TestSandboxRequirements(unittest.TestCase):
     def test_available_on_posix(self):
         if sys.platform != "win32":
@@ -352,6 +378,42 @@ print(result.get("output", ""))
         self.assertEqual(result["status"], "success")
         self.assertIn("mock output for: echo hello", result["output"])
         self.assertEqual(result["tool_calls_made"], 1)
+        # The count is not a list: the envelope names the calls it chained, in order,
+        # so a surface can draw them under the one row the script produced.
+        self.assertEqual(result["tool_calls"], [{"tool": "terminal", "status": "ok"}])
+
+    def test_a_cell_with_no_chained_calls_reports_an_empty_list(self):
+        """`tool_calls` is present and empty, never absent — absence would read as
+        'the runtime did not say' and collapse into the same generic detail."""
+        result = self._run('print("plain output")')
+        self.assertEqual(result["tool_calls"], [])
+
+    def test_chained_calls_stay_inside_their_own_cell(self):
+        """A persistent kernel keeps one log; a cell names only what it dispatched."""
+        first = self._run('from hermes_tools import terminal\nprint(terminal("echo first")["output"])')
+        self.assertEqual(len(first["tool_calls"]), 1)
+        second = self._run('from hermes_tools import terminal\nprint(terminal("echo second")["output"])')
+        self.assertEqual(second["tool_calls"], [{"tool": "terminal", "status": "ok"}])
+
+    def test_a_failed_chained_call_is_named_as_an_error(self):
+        """A dispatch that raised is still a chained call, settled as `error`."""
+        def dispatch(function_name, function_args, task_id=None, user_task=None):
+            if function_args.get("command") == "boom":
+                raise RuntimeError("boom")
+            return _mock_handle_function_call(function_name, function_args, task_id, user_task)
+
+        code = """
+from hermes_tools import terminal
+print(terminal("echo fine").get("output", ""))
+print(terminal("boom"))
+"""
+        with patch("model_tools.handle_function_call", side_effect=dispatch):
+            result = json.loads(execute_code(code=code, task_id="test-task",
+                                             enabled_tools=list(SANDBOX_ALLOWED_TOOLS)))
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["tool_calls"],
+                         [{"tool": "terminal", "status": "ok"},
+                          {"tool": "terminal", "status": "error"}])
 
 
     def test_concurrent_tool_calls_match_responses(self):

@@ -142,6 +142,19 @@ def tool_errors_since(tool_call_log: list, start: int = 0) -> list:
     return [{"tool": e["tool"], "error": e["error"]} for e in tool_call_log[start:] if e.get("error")][:5]
 
 
+def tool_calls_since(tool_call_log: list, start: int = 0) -> list:
+    """Every in-script tool call since *start*, in dispatch order, as ``{tool, status}``.
+
+    The envelope's own row cannot say what the code chained: ``tool_calls_made`` is a count
+    and ``tool_errors_since`` names only the failures, so a run of successful calls leaves no
+    trace beside the script's own output. This is the log reduced to the two facts a nested
+    row draws — the tool's name and whether that call failed — so no argument preview and no
+    result of a chained call is republished beside the output it already belongs to.
+    """
+    return [{"tool": e["tool"], "status": "error" if e.get("error") else "ok"}
+            for e in tool_call_log[start:]]
+
+
 def _rpc_server_loop(server_sock: socket.socket, task_id: str, tool_call_log: list,
                      tool_call_counter: list, max_tool_calls: int, allowed_tools: frozenset,
                      stop_event: threading.Event, rpc_token: str, dispatch=None):

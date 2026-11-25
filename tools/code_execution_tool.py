@@ -30,7 +30,8 @@ from tools.registry import registry, tool_error
 from hermes_time import get_timezone_name
 from tools.code_execution_env import _resolve_child_cwd, _resolve_child_python
 from tools.code_execution_rpc import (
-    _execute_checked, _private_dirs_cmd, _remote_write, _rpc_poll_loop, tool_errors_since,
+    _execute_checked, _private_dirs_cmd, _remote_write, _rpc_poll_loop, tool_calls_since,
+    tool_errors_since,
 )
 from tools.tool_output_truncate import head_tail_split, truncation_notice
 
@@ -533,18 +534,26 @@ def _with_timeout_notice(stdout_text: str, timeout_msg: str) -> str:
 
 
 def _error_result(error: str, *, tool_calls_made: int = 0, duration: float = 0,
-                  user_summary: Optional[str] = None) -> str:
-    body = {"status": "error", "error": error, "tool_calls_made": tool_calls_made, "duration_seconds": duration}
+                  user_summary: Optional[str] = None,
+                  tool_calls: Optional[list] = None) -> str:
+    body: dict[str, Any] = {"status": "error", "error": error, "tool_calls_made": tool_calls_made,
+                            "duration_seconds": duration}
+    if tool_calls is not None:
+        # A run that died after dispatching calls still names them: the count alone says
+        # work happened and nothing about what it was.
+        body["tool_calls"] = tool_calls
     if user_summary:
         body["user_summary"] = user_summary  # one human sentence; surfaces show it before the model text
     return json.dumps(body, ensure_ascii=False)
 
 
-def _remote_failure(exc: BaseException, exec_start: float, tool_calls_made: int) -> str:
+def _remote_failure(exc: BaseException, exec_start: float, tool_calls_made: int,
+                    tool_calls: Optional[list] = None) -> str:
     duration = round(time.monotonic() - exec_start, 2)
     logger.error("execute_code remote failed after %ss with %d tool calls: %s: %s",
                  duration, tool_calls_made, type(exc).__name__, exc, exc_info=True)
-    return _error_result(str(exc), tool_calls_made=tool_calls_made, duration=duration)
+    return _error_result(str(exc), tool_calls_made=tool_calls_made, duration=duration,
+                         tool_calls=tool_calls)
 
 
 _REMOTE_EXIT_STATUS = {124: "timeout", 130: "interrupted"}
@@ -584,6 +593,8 @@ def _finish_remote_kernel_result(kernel_result: dict[str, Any], *,
                             kernel=kernel_result.get("kernel", {"remote": True}), env=env)
     if kernel_result.get("tool_errors"):
         result["tool_errors"] = kernel_result["tool_errors"]
+    if kernel_result.get("tool_calls") is not None:
+        result["tool_calls"] = kernel_result["tool_calls"]
     if result["status"] == "timeout":
         _apply_timeout(result, f"Cell timed out after {timeout}s; the remote session kernel was "
                                "killed and its state was lost. The next call starts fresh.")
@@ -643,7 +654,7 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
         # Backend exit codes: 124 = timeout wrapper, 130 = SIGINT.
         status = _REMOTE_EXIT_STATUS.get(exit_code, "success")
     except Exception as exc:
-        return _remote_failure(exc, exec_start, tool_call_counter[0])
+        return _remote_failure(exc, exec_start, tool_call_counter[0], tool_calls_since(tool_call_log))
     finally:
         stop_event.set()
         if rpc_thread is not None:
@@ -657,6 +668,7 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
     tool_errors = tool_errors_since(tool_call_log)
     if tool_errors:
         result["tool_errors"] = tool_errors
+    result["tool_calls"] = tool_calls_since(tool_call_log)
     if status == "timeout":
         _apply_timeout(result, f"Script timed out after {timeout}s and was killed.")
         logger.warning("execute_code (remote) timed out after %ss (limit %ss) with %d tool calls",

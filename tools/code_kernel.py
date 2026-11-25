@@ -950,10 +950,13 @@ def _cell_result(kernel: SessionKernel, key: tuple, status: str, payload: dict[s
                    "execution_count": kernel.execution_count, "state_reset": state_reset},
     }
     result.update(stdout_metadata)
-    from tools.code_execution_rpc import tool_errors_since
+    from tools.code_execution_rpc import tool_calls_since, tool_errors_since
     tool_errors = tool_errors_since(kernel.tool_call_log, kernel.cell_log_start)
     if tool_errors:
         result["tool_errors"] = tool_errors
+    # The cell's own chained calls, named: the envelope is one row and the calls inside it
+    # are only a count otherwise, so a reader cannot see what the code did with its budget.
+    result["tool_calls"] = tool_calls_since(kernel.tool_call_log, kernel.cell_log_start)
     # Cell-side spill (runner clipped before replying): the runner writes raw stdout, so
     # _sanitize_cell_spill re-publishes it sanitized under cache/exec before the path is
     # advertised. When it fails the host-side spill of the clipped head (set above by

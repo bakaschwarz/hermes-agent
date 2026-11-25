@@ -399,7 +399,7 @@ def _run_attached_cell(kernel: RemoteKernel, key: tuple, code: str, *, env, task
                        reused: bool, state_reset: bool, state_lost: bool,
                        session_id: str | None = None, turn_id: str | None = None,
                        conversation_id: str | None = None) -> dict[str, Any]:
-    from tools.code_execution_rpc import tool_errors_since
+    from tools.code_execution_rpc import tool_calls_since, tool_errors_since
     from tools.code_execution_tool import _rpc_poll_loop
     from tools.thread_context import propagate_context_to_thread
     # Clean stale tool-RPC requests from a previous cell before arming this cell's poll loop, so
@@ -437,6 +437,9 @@ def _run_attached_cell(kernel: RemoteKernel, key: tuple, code: str, *, env, task
         "status": "error", "stdout": cell_payload.get("stdout", ""), "stderr": cell_payload.get("stderr", ""),
         "traceback": cell_payload.get("traceback", ""), "tool_calls_made": tool_call_counter[0], "kernel": kernel_info,
         "tool_errors": tool_errors_since(tool_call_log),
+        # The cell's chained calls as one list per cell, named by the poll loop that
+        # dispatched them — the envelope's own row cannot say what the code called.
+        "tool_calls": tool_calls_since(tool_call_log),
     }
     if cell_status in ("timeout", "protocol-error", "no-result"):
         # No safe way to interrupt one cell in place (same contract as local): kill, report, respawn.
