@@ -71,6 +71,13 @@ recipes); a new command is a `scripts/` file plus a recipe. The `HX0xx`/`PS-P0x`
 fixes are in `scripts/code_health/config.py`; `# noqa` does not waive a finding,
 `# health: allow <RULE> -- <why>` does.
 
+A linked worktree (`git worktree add`) has no `venv/` of its own and needs no second install:
+`scripts/hermes-python` — and so every `just` recipe, including the lefthook `pre-commit` ruff
+job — resolves the interpreter from the PM store, which is shared by every worktree of the same
+checkout. If a hook ever prints `no bootstrap Python found`, run `setup-hermes.sh --runtime-only`
+in that worktree: it stages the store's python and re-records the activation inputs. The hooks are
+the gate here too — `--no-verify` is not the fallback, the store is.
+
 ## Project Structure
 
 The filesystem is canonical. Load-bearing entry points:

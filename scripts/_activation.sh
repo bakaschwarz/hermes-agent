@@ -32,13 +32,21 @@ hermes_sync() {
 
 # hermes_bootstrap_python REPO: print the interpreter that can run pm before
 # any dependency is importable. It only emits the environment; it installs nothing.
+# The store list must include the one setup-hermes.sh installs into,
+# `${HERMES_RUNTIME_DIR:-$HOME/.hermes/tools}`: that is not `$HERMES_HOME/tools`
+# whenever a wrapper points HERMES_HOME at a profile directory, and a linked
+# worktree (`git worktree add`) has no venv of its own, so a store this misses
+# leaves the checkout with no interpreter at all and the hook reports a missing
+# environment over a store that holds one.
 hermes_bootstrap_python() {
     local repo="$1" store candidate
     for candidate in "$repo/.venv/bin/python" "$repo/.venv/Scripts/python.exe" \
                      "$repo/venv/bin/python" "$repo/venv/Scripts/python.exe"; do
         [ -x "$candidate" ] && { printf '%s\n' "$candidate"; return 0; }
     done
-    for store in "${HERMES_RUNTIME_DIR:-}" "$repo/../tools" "${HERMES_HOME:-$HOME/.hermes}/tools"; do
+    for store in "${HERMES_RUNTIME_DIR:-}" "$repo/../tools" \
+                 "${HERMES_RUNTIME_DIR:-$HOME/.hermes/tools}" \
+                 "${HERMES_HOME:-$HOME/.hermes}/tools"; do
         [ -n "$store" ] || continue
         for candidate in "$store"/python-*/bin/python3 "$store"/python-*/python.exe \
                          "$store"/python-*/bin/python "$store"/python-*/bin/python.exe; do
